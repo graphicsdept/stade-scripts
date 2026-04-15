@@ -1,0 +1,6 @@
+node_modules/
+package-lock.json
+proxy.js
+package.json
+CLAUDE.md
+.DS_Store
