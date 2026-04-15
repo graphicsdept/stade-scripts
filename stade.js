@@ -1,6 +1,7 @@
 /* ============================================================
    STADE — Custom Scripts
    https://stadeny.webflow.io
+   v1.0.2
 
    Hosted externally via jsDelivr + GitHub.
    To update: push changes to GitHub, create a new release tag,
