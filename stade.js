@@ -637,7 +637,14 @@ window.Webflow.push(function () {
   });
 
   window.Webflow = window.Webflow || [];
-  window.Webflow.push(function () { applyView(activeView); initItems(); });
+  window.Webflow.push(function () {
+    applyView(activeView);
+    var defaultViewEl = Array.from(filterEls).find(function (f) {
+      return f.getAttribute('data-filter-type') === 'view' && normalize(f.getAttribute('data-filter-value') || '') === activeView;
+    });
+    if (defaultViewEl) updateSelected(defaultViewEl, 'view');
+    initItems();
+  });
 
 })();
 
@@ -1258,7 +1265,110 @@ window.Webflow.push(function () {
 
 
 /* ============================================================
-   11. PAGE TRANSITIONS — always last
+   11. FOOTER BG ZONES
+   Divides footer width into 5 zones; crossfades to the CMS
+   thumb image associated with each zone on mousemove.
+   Mouse leave fades out completely, revealing the default bg.
+   Requires: [data-footer-bg] on section, [data-footer-bg-wrap]
+   on an absolute inner div, .cms-footer-item on each hidden
+   CMS list item containing a bound <img>.
+   Desktop only.
+   ============================================================ */
+(function () {
+
+  var ZONES      = 5;
+  var FADE_SPEED = 600;
+  var EASING     = 'cubic-bezier(0.25, 0, 0.15, 1)';
+
+  if (window.matchMedia('(max-width: 767px)').matches) return;
+
+  var section = document.querySelector('[data-footer-bg]');
+  if (!section) return;
+
+  var bgWrap = section.querySelector('[data-footer-bg-wrap]');
+  if (!bgWrap) return;
+
+  var items = Array.from(section.querySelectorAll('.cms-footer-item'));
+  if (!items.length) return;
+
+  var BASE = [
+    'position:absolute', 'inset:0', 'width:100%', 'height:100%',
+    'object-fit:cover', 'opacity:0', 'z-index:1',
+    'transition:opacity ' + FADE_SPEED + 'ms ' + EASING
+  ].join(';');
+
+  var slot1 = document.createElement('img'); slot1.style.cssText = BASE;
+  var slot2 = document.createElement('img'); slot2.style.cssText = BASE;
+  bgWrap.appendChild(slot1);
+  bgWrap.appendChild(slot2);
+
+  var activeSlot   = slot1;
+  var inactiveSlot = slot2;
+  var currentZone  = -1;
+  var pendingRaf   = null;
+  var switchToken  = 0;
+
+  function crossfadeTo(src) {
+    if (!src) return;
+    if (activeSlot.src === src && parseFloat(activeSlot.style.opacity) === 1) return;
+
+    var token    = ++switchToken;
+    var incoming = inactiveSlot;
+    var outgoing  = activeSlot;
+
+    incoming.src              = src;
+    incoming.style.zIndex     = '2';
+    incoming.style.transition = 'none';
+    incoming.style.opacity    = '0';
+    incoming.getBoundingClientRect();
+
+    activeSlot   = incoming;
+    inactiveSlot = outgoing;
+
+    if (pendingRaf) { cancelAnimationFrame(pendingRaf); pendingRaf = null; }
+    pendingRaf = requestAnimationFrame(function () {
+      pendingRaf = requestAnimationFrame(function () {
+        pendingRaf = null;
+        if (token !== switchToken) return;
+        incoming.style.transition = 'opacity ' + FADE_SPEED + 'ms ' + EASING;
+        incoming.style.opacity    = '1';
+        outgoing.style.opacity    = '0';
+        outgoing.style.zIndex     = '1';
+      });
+    });
+  }
+
+  function fadeOut() {
+    var token = ++switchToken;
+    if (pendingRaf) { cancelAnimationFrame(pendingRaf); pendingRaf = null; }
+    pendingRaf = requestAnimationFrame(function () {
+      pendingRaf = null;
+      if (token !== switchToken) return;
+      slot1.style.transition = 'opacity ' + FADE_SPEED + 'ms ' + EASING;
+      slot2.style.transition = 'opacity ' + FADE_SPEED + 'ms ' + EASING;
+      slot1.style.opacity = '0';
+      slot2.style.opacity = '0';
+    });
+    currentZone = -1;
+  }
+
+  section.addEventListener('mousemove', function (e) {
+    var rect = section.getBoundingClientRect();
+    var zone = Math.min(Math.floor(((e.clientX - rect.left) / rect.width) * ZONES), ZONES - 1);
+    if (zone === currentZone) return;
+    currentZone = zone;
+    var item = items[Math.min(zone, items.length - 1)];
+    var img  = item.querySelector('img');
+    if (img && img.src) crossfadeTo(img.src);
+  });
+
+  section.addEventListener('mouseleave', fadeOut);
+
+})();
+
+
+/* ============================================================
+   12. PAGE TRANSITIONS — always last
    Creates overlay, fades out on load, fades in on navigate
    Intercepts all internal link clicks
    Exposes window.stadeNavigate(url) for programmatic navigation
