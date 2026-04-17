@@ -513,6 +513,11 @@ window.Webflow.push(function () {
 
   var mq767 = window.matchMedia('(max-width: 767px)');
 
+  // Disable Webflow CSS hover overlay on touch devices (avoids tap-to-hover flicker)
+  var noHoverStyle = document.createElement('style');
+  noHoverStyle.textContent = '@media (hover: none) { .cms-work-grid_list_item:hover .work-title_wrapper { opacity: 0 !important; pointer-events: none !important; } }';
+  document.head.appendChild(noHoverStyle);
+
   var activeFilters = { category: 'all', type: 'all' };
   var activeView    = 'small';
 
@@ -1137,6 +1142,8 @@ window.Webflow.push(function () {
    Opens/closes nav-contact overlay with staggered form reveal
    Add data-contact-trigger to Contact nav button
    Add data-contact-overlay to the nav-contact div
+   Mobile: fixed bottom-right panel with dim backdrop.
+   Desktop: nav-integrated overlay.
    ============================================================ */
 (function () {
 
@@ -1148,22 +1155,25 @@ window.Webflow.push(function () {
   var overlay = document.querySelector('[data-contact-overlay]');
   if (!trigger || !overlay) return;
 
-  var mq767   = window.matchMedia('(max-width: 767px)');
-  var isOpen  = false;
-  var timers  = [];
-  var backdrop = null;
+  var mq767              = window.matchMedia('(max-width: 767px)');
+  var isOpen             = false;
+  var timers             = [];
+  var backdrop           = null;
+  var overlayOrigParent  = null;
+  var overlayOrigSibling = null;
 
   var formContent = overlay.querySelector('.form_contact-content');
   var staggerEls  = formContent ? Array.from(formContent.children) : [];
 
   function clearTimers() { timers.forEach(function (t) { clearTimeout(t); }); timers = []; }
 
+  /* ── Backdrop (mobile only) ── */
   function showBackdrop() {
     if (backdrop) return;
     backdrop = document.createElement('div');
     backdrop.style.cssText = [
       'position:fixed', 'inset:0', 'z-index:999',
-      'background:rgba(0,0,0,0.4)',
+      'background:rgba(0,0,0,0.5)',
       'opacity:0',
       'transition:opacity ' + DURATION + 'ms ' + EASING
     ].join(';');
@@ -1181,27 +1191,50 @@ window.Webflow.push(function () {
     setTimeout(function () { if (b.parentNode) b.parentNode.removeChild(b); }, DURATION);
   }
 
+  /* ── Dim/restore non-trigger nav items (mobile only) ── */
+  function setNavDim(dim) {
+    var dropdown = document.getElementById('mobile-nav-dropdown');
+    if (!dropdown) return;
+    Array.from(dropdown.querySelectorAll('a, button')).forEach(function (item) {
+      if (item === trigger || item.contains(trigger) || trigger.contains(item)) return;
+      item.style.transition = 'opacity ' + DURATION + 'ms ' + EASING;
+      item.style.opacity    = dim ? '0.2' : '';
+    });
+  }
+
   function openContact() {
     isOpen = true; clearTimers();
     var triggerText = trigger.querySelector('.btn_text') || trigger;
     triggerText.textContent = 'Close';
 
     if (mq767.matches) {
-      // Mobile: fixed modal above everything, no nav interference
+      // Dim sibling nav items so trigger is the only clear action
+      setNavDim(true);
+      // Lift overlay out of nav into body — escapes any nav stacking context
+      // so it always sits above the backdrop regardless of nav z-index
+      overlayOrigParent  = overlay.parentNode;
+      overlayOrigSibling = overlay.nextSibling;
+      document.body.appendChild(overlay);
+      // Bottom-right corner, 0.5rem from edges — consistent with mobile margins
+      overlay.style.position = 'fixed';
+      overlay.style.bottom   = '0.5rem';
+      overlay.style.right    = '0.5rem';
+      overlay.style.left     = 'auto';
+      overlay.style.top      = 'auto';
+      overlay.style.zIndex   = '1000';
       showBackdrop();
-      overlay.style.position   = 'fixed';
-      overlay.style.inset      = '0';
-      overlay.style.zIndex     = '1000';
     } else {
-      // Desktop: hide mobile dropdown if present (shouldn't exist but guard anyway)
       var mobileDropdown = document.getElementById('mobile-nav-dropdown');
       if (mobileDropdown) mobileDropdown.style.visibility = 'hidden';
     }
 
-    overlay.style.display = 'flex'; overlay.style.pointerEvents = 'auto';
+    overlay.style.display        = 'flex';
+    overlay.style.alignItems     = 'center';
+    overlay.style.justifyContent = 'center';
+    overlay.style.pointerEvents  = 'auto';
     overlay.getBoundingClientRect();
     overlay.style.transition = 'opacity ' + DURATION + 'ms ' + EASING;
-    overlay.style.opacity = '1';
+    overlay.style.opacity    = '1';
 
     staggerEls.forEach(function (el) {
       el.style.transition = 'none'; el.style.opacity = '0'; el.style.transform = 'translateY(8px)';
@@ -1220,18 +1253,34 @@ window.Webflow.push(function () {
     triggerText.textContent = 'Contact';
 
     if (mq767.matches) {
+      setNavDim(false);
       hideBackdrop();
       overlay.style.position = '';
-      overlay.style.inset    = '';
+      overlay.style.bottom   = '';
+      overlay.style.right    = '';
+      overlay.style.left     = '';
+      overlay.style.top      = '';
       overlay.style.zIndex   = '';
     } else {
       var mobileDropdown = document.getElementById('mobile-nav-dropdown');
       if (mobileDropdown) mobileDropdown.style.visibility = '';
     }
 
-    overlay.style.transition = 'opacity ' + DURATION + 'ms ' + EASING;
-    overlay.style.opacity = '0'; overlay.style.pointerEvents = 'none';
-    timers.push(setTimeout(function () { overlay.style.display = 'none'; }, DURATION));
+    overlay.style.transition     = 'opacity ' + DURATION + 'ms ' + EASING;
+    overlay.style.opacity        = '0';
+    overlay.style.pointerEvents  = 'none';
+    overlay.style.alignItems     = '';
+    overlay.style.justifyContent = '';
+
+    timers.push(setTimeout(function () {
+      overlay.style.display = 'none';
+      // Return overlay to its original nav position
+      if (overlayOrigParent) {
+        overlayOrigParent.insertBefore(overlay, overlayOrigSibling);
+        overlayOrigParent  = null;
+        overlayOrigSibling = null;
+      }
+    }, DURATION));
 
     var cursor = document.querySelector('.custom-cursor');
     if (cursor) { cursor.classList.remove('is-visible'); cursor.textContent = ''; }
