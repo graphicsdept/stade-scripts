@@ -512,7 +512,10 @@ window.Webflow.push(function () {
   if (!filterEls.length || !gridList) return;
 
   var activeFilters = { category: 'all', type: 'all' };
-  var activeView    = 'medium';
+  var activeView    = 'small';
+
+  // Apply view class immediately to prevent flash before Webflow.push fires.
+  gridList.classList.add('view-' + activeView);
   var activeTimers  = [];
 
   var viewColumns = { small: 8, medium: 4, large: 2 };
@@ -547,11 +550,16 @@ window.Webflow.push(function () {
     if (countWrap) countWrap.style.opacity = '1';
   }
 
-  function applyView(view) {
+  function applyView(view, instant) {
     var cols  = viewColumns[view];
     var items = Array.from(gridList.querySelectorAll('.cms-work-grid_list_item'));
     gridList.classList.remove('view-small', 'view-medium', 'view-large');
     gridList.classList.add('view-' + view);
+    activeView = view;
+    if (instant) {
+      gridList.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+      return;
+    }
     items.forEach(function (item) {
       if (item.style.display !== 'none') { item.style.transition = makeTransition(VIEW_DURATION / 2); item.style.opacity = '0'; }
     });
@@ -563,7 +571,6 @@ window.Webflow.push(function () {
         }, i * 20);
       });
     }, VIEW_DURATION / 2);
-    activeView = view;
   }
 
   function animateFilter() {
@@ -608,13 +615,25 @@ window.Webflow.push(function () {
 
   function initItems() {
     var items = Array.from(gridList.querySelectorAll('.cms-work-grid_list_item'));
+    var vh    = window.innerHeight;
     items.forEach(function (item) {
-      item.style.transition = 'none'; item.style.opacity = '0';
-      item.style.transform  = 'translateY(' + SCROLL_OFFSET + ')';
+      var rect   = item.getBoundingClientRect();
+      var inView = rect.top < vh && rect.bottom > 0;
+      item.style.transition = 'none';
+      if (inView) {
+        item.style.opacity   = '1';
+        item.style.transform = 'none';
+        revealedItems.add(item);
+      } else {
+        item.style.opacity   = '0';
+        item.style.transform = 'translateY(' + SCROLL_OFFSET + ')';
+      }
     });
     gridList.getBoundingClientRect();
     requestAnimationFrame(function () { requestAnimationFrame(function () {
-      items.forEach(function (item) { scrollObserver.observe(item); });
+      items.forEach(function (item) {
+        if (!revealedItems.has(item)) scrollObserver.observe(item);
+      });
       updateCount(items.length, items.length);
     }); });
   }
@@ -639,7 +658,7 @@ window.Webflow.push(function () {
 
   window.Webflow = window.Webflow || [];
   window.Webflow.push(function () {
-    applyView(activeView);
+    applyView(activeView, true);
     var defaultViewEl = Array.from(filterEls).find(function (f) {
       return f.getAttribute('data-filter-type') === 'view' && normalize(f.getAttribute('data-filter-value') || '') === activeView;
     });
