@@ -511,11 +511,14 @@ window.Webflow.push(function () {
 
   if (!filterEls.length || !gridList) return;
 
+  var mq767 = window.matchMedia('(max-width: 767px)');
+
   var activeFilters = { category: 'all', type: 'all' };
   var activeView    = 'small';
 
   // Apply view class immediately to prevent flash before Webflow.push fires.
-  gridList.classList.add('view-' + activeView);
+  // Skip on mobile — Webflow CSS controls responsive column layout.
+  if (!mq767.matches) gridList.classList.add('view-' + activeView);
   var activeTimers  = [];
 
   var viewColumns = { small: 8, medium: 4, large: 2 };
@@ -649,20 +652,38 @@ window.Webflow.push(function () {
       var filterType  = el.getAttribute('data-filter-type');
       var filterValue = normalize(el.getAttribute('data-filter-value') || '');
       if (!filterType || !filterValue) return;
-      if (filterType === 'view') { applyView(filterValue); updateSelected(el, 'view'); return; }
+      if (filterType === 'view') { if (mq767.matches) return; applyView(filterValue); updateSelected(el, 'view'); return; }
       activeFilters[filterType] = filterValue;
       updateSelected(el, filterType);
       animateFilter();
     });
   });
 
+  function setMobileViewState(isMobile) {
+    Array.from(filterEls).forEach(function (f) {
+      if (f.getAttribute('data-filter-type') === 'view') {
+        f.style.display = isMobile ? 'none' : '';
+      }
+    });
+    if (isMobile) {
+      gridList.classList.remove('view-small', 'view-medium', 'view-large');
+      gridList.style.gridTemplateColumns = '';
+    }
+  }
+
+  mq767.addListener(function (e) { setMobileViewState(e.matches); });
+
   window.Webflow = window.Webflow || [];
   window.Webflow.push(function () {
-    applyView(activeView, true);
-    var defaultViewEl = Array.from(filterEls).find(function (f) {
-      return f.getAttribute('data-filter-type') === 'view' && normalize(f.getAttribute('data-filter-value') || '') === activeView;
-    });
-    if (defaultViewEl) updateSelected(defaultViewEl, 'view');
+    if (mq767.matches) {
+      setMobileViewState(true);
+    } else {
+      applyView(activeView, true);
+      var defaultViewEl = Array.from(filterEls).find(function (f) {
+        return f.getAttribute('data-filter-type') === 'view' && normalize(f.getAttribute('data-filter-value') || '') === activeView;
+      });
+      if (defaultViewEl) updateSelected(defaultViewEl, 'view');
+    }
     initItems();
   });
 
@@ -1041,10 +1062,9 @@ window.Webflow.push(function () {
 
 /* ============================================================
    8. TEAM BIO HOVER
-   Reads bio from each .team-member_wrapper's nested .team_bio-info
-   Shows in shared panel on hover (desktop)
-   Tap to expand inline (mobile)
-   Add data-team-section to the section wrapping the team grid
+   .team_bio-info is already positioned by Webflow CSS inside
+   each .team-member_wrapper. JS just fades it in/out on hover.
+   Mobile: tap to toggle, stacks naturally in document flow.
    ============================================================ */
 (function () {
 
@@ -1056,93 +1076,47 @@ window.Webflow.push(function () {
     var members = Array.from(document.querySelectorAll('.team-member_wrapper'));
     if (!members.length) return;
 
-    var bios    = Array.from(document.querySelectorAll('.team_bio-info'));
-    var section = document.querySelector('[data-team-section]') || (members[0] && members[0].closest('[class*="section"]'));
-    if (!section) return;
-
-    section.style.position = 'relative';
-
-    bios.forEach(function (bio) { bio.style.display = 'none'; bio.style.position = 'static'; });
-
-    var panel = document.createElement('div');
-    panel.className = 'team_bio-panel';
-    panel.style.cssText = 'position:absolute;bottom:0;right:0;opacity:0;pointer-events:none;transition:opacity ' + DURATION + 'ms ' + EASING + ';z-index:10';
-
-    var panelName  = document.createElement('h4');  panelName.className  = 'heading-style-h4';
-    var panelTitle = document.createElement('h6');  panelTitle.className = 'heading-style-h6';
-    var panelBio   = document.createElement('p');   panelBio.className   = 'text-size-small';
-    var panelLinks = document.createElement('div'); panelLinks.className = 'team_bio-links';
-    panelLinks.style.cssText = 'display:flex;flex-direction:column;gap:4px;margin-top:8px';
-
-    panel.appendChild(panelName); panel.appendChild(panelTitle);
-    panel.appendChild(panelBio);  panel.appendChild(panelLinks);
-    section.appendChild(panel);
-
-    function getBioData(member) {
+    members.forEach(function (member) {
       var bio = member.querySelector('.team_bio-info');
-      if (!bio) return null;
-      return {
-        name:  (bio.querySelector('h4, .heading-style-h4')  || {}).innerHTML || '',
-        title: (bio.querySelector('h6, .heading-style-h6')  || {}).innerHTML || '',
-        body:  (bio.querySelector('p, .text-size-small')    || {}).innerHTML || '',
-        links: Array.from(bio.querySelectorAll('a')).map(function (a) { return { text: a.textContent.trim(), href: a.href }; })
-      };
-    }
+      if (!bio) return;
 
-    function updatePanel(data) {
-      panelName.innerHTML = data.name; panelTitle.innerHTML = data.title; panelBio.innerHTML = data.body;
-      panelLinks.innerHTML = '';
-      data.links.forEach(function (link) {
-        var a = document.createElement('a'); a.href = link.href; a.textContent = link.text; a.className = 'btn_primary';
-        panelLinks.appendChild(a);
-      });
-    }
+      if (!isMobile) {
+        bio.style.opacity       = '0';
+        bio.style.pointerEvents = 'none';
+        bio.style.transition    = 'opacity ' + DURATION + 'ms ' + EASING;
 
-    var hideTimer = null;
+        member.addEventListener('mouseenter', function () {
+          bio.style.opacity = '1'; bio.style.pointerEvents = 'auto';
+          member.classList.add('is-active');
+        });
+        member.addEventListener('mouseleave', function () {
+          bio.style.opacity = '0'; bio.style.pointerEvents = 'none';
+          member.classList.remove('is-active');
+        });
 
-    function showPanel(member) {
-      var data = getBioData(member); if (!data) return;
-      if (hideTimer) clearTimeout(hideTimer);
-      updatePanel(data); panel.style.opacity = '1'; panel.style.pointerEvents = 'auto';
-      members.forEach(function (m) { m.classList.remove('is-active'); });
-      member.classList.add('is-active');
-    }
-
-    function hidePanel() {
-      hideTimer = setTimeout(function () {
-        panel.style.opacity = '0'; panel.style.pointerEvents = 'none';
-        members.forEach(function (m) { m.classList.remove('is-active'); });
-      }, 120);
-    }
-
-    if (!isMobile) {
-      members.forEach(function (member) {
-        member.style.cursor = 'pointer';
-        member.addEventListener('mouseenter', function () { showPanel(member); });
-        member.addEventListener('mouseleave', hidePanel);
-      });
-      panel.addEventListener('mouseenter', function () { if (hideTimer) clearTimeout(hideTimer); });
-      panel.addEventListener('mouseleave', hidePanel);
-    }
-
-    if (isMobile) {
-      bios.forEach(function (bio) {
-        bio.style.display = 'block'; bio.style.position = 'static';
-        bio.style.opacity = '0'; bio.style.maxHeight = '0'; bio.style.overflow = 'hidden';
+      } else {
+        bio.style.overflow   = 'hidden';
+        bio.style.maxHeight  = '0';
+        bio.style.opacity    = '0';
         bio.style.transition = 'opacity ' + DURATION + 'ms ' + EASING + ', max-height ' + DURATION + 'ms ' + EASING;
-      });
-      members.forEach(function (member) {
-        var bio = member.querySelector('.team_bio-info'); if (!bio) return;
+
         var isOpen = false;
         member.addEventListener('click', function () {
-          if (isOpen) { bio.style.opacity = '0'; bio.style.maxHeight = '0'; isOpen = false; member.classList.remove('is-active'); }
-          else {
-            members.forEach(function (m) { var b = m.querySelector('.team_bio-info'); if (b) { b.style.opacity = '0'; b.style.maxHeight = '0'; } m.classList.remove('is-active'); });
-            bio.style.opacity = '1'; bio.style.maxHeight = '500px'; isOpen = true; member.classList.add('is-active');
+          if (isOpen) {
+            bio.style.opacity = '0'; bio.style.maxHeight = '0';
+            member.classList.remove('is-active'); isOpen = false;
+          } else {
+            members.forEach(function (m) {
+              var b = m.querySelector('.team_bio-info');
+              if (b) { b.style.opacity = '0'; b.style.maxHeight = '0'; }
+              m.classList.remove('is-active');
+            });
+            bio.style.opacity = '1'; bio.style.maxHeight = '500px';
+            member.classList.add('is-active'); isOpen = true;
           }
         });
-      });
-    }
+      }
+    });
   }
 
   var attempts = 0;
@@ -1174,30 +1148,68 @@ window.Webflow.push(function () {
   var overlay = document.querySelector('[data-contact-overlay]');
   if (!trigger || !overlay) return;
 
-  var isOpen = false, timers = [];
+  var mq767   = window.matchMedia('(max-width: 767px)');
+  var isOpen  = false;
+  var timers  = [];
+  var backdrop = null;
 
-  var staggerEls = Array.from(overlay.querySelectorAll(
-    '.form_2up, .form_text-field, .btn_form, .form_success-content, .form_error-content'
-  )).filter(function (el) {
-    return !(el.classList.contains('form_text-field') && el.closest('.form_2up'));
-  });
+  var formContent = overlay.querySelector('.form_contact-content');
+  var staggerEls  = formContent ? Array.from(formContent.children) : [];
 
   function clearTimers() { timers.forEach(function (t) { clearTimeout(t); }); timers = []; }
 
+  function showBackdrop() {
+    if (backdrop) return;
+    backdrop = document.createElement('div');
+    backdrop.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:999',
+      'background:rgba(0,0,0,0.4)',
+      'opacity:0',
+      'transition:opacity ' + DURATION + 'ms ' + EASING
+    ].join(';');
+    backdrop.addEventListener('click', closeContact);
+    backdrop.addEventListener('touchend', function (e) { e.preventDefault(); closeContact(); });
+    document.body.appendChild(backdrop);
+    backdrop.getBoundingClientRect();
+    backdrop.style.opacity = '1';
+  }
+
+  function hideBackdrop() {
+    if (!backdrop) return;
+    var b = backdrop; backdrop = null;
+    b.style.opacity = '0';
+    setTimeout(function () { if (b.parentNode) b.parentNode.removeChild(b); }, DURATION);
+  }
+
   function openContact() {
     isOpen = true; clearTimers();
-    var mobileDropdown = document.getElementById('mobile-nav-dropdown');
-    if (mobileDropdown) mobileDropdown.style.visibility = 'hidden';
     var triggerText = trigger.querySelector('.btn_text') || trigger;
     triggerText.textContent = 'Close';
+
+    if (mq767.matches) {
+      // Mobile: fixed modal above everything, no nav interference
+      showBackdrop();
+      overlay.style.position   = 'fixed';
+      overlay.style.inset      = '0';
+      overlay.style.zIndex     = '1000';
+    } else {
+      // Desktop: hide mobile dropdown if present (shouldn't exist but guard anyway)
+      var mobileDropdown = document.getElementById('mobile-nav-dropdown');
+      if (mobileDropdown) mobileDropdown.style.visibility = 'hidden';
+    }
+
     overlay.style.display = 'flex'; overlay.style.pointerEvents = 'auto';
     overlay.getBoundingClientRect();
-    overlay.style.transition = 'opacity ' + DURATION + 'ms ' + EASING; overlay.style.opacity = '1';
-    staggerEls.forEach(function (el) { el.style.transition = 'none'; el.style.opacity = '0'; el.style.transform = 'translateY(8px)'; });
+    overlay.style.transition = 'opacity ' + DURATION + 'ms ' + EASING;
+    overlay.style.opacity = '1';
+
+    staggerEls.forEach(function (el) {
+      el.style.transition = 'none'; el.style.opacity = '0'; el.style.transform = 'translateY(8px)';
+    });
     staggerEls.forEach(function (el, i) {
       timers.push(setTimeout(function () {
         el.style.transition = 'opacity ' + DURATION + 'ms ' + EASING + ', transform ' + DURATION + 'ms ' + EASING;
-        el.style.opacity    = '1'; el.style.transform = 'translateY(0)';
+        el.style.opacity = '1'; el.style.transform = 'translateY(0)';
       }, DURATION * 0.5 + i * STAGGER));
     });
   }
@@ -1206,24 +1218,57 @@ window.Webflow.push(function () {
     isOpen = false; clearTimers();
     var triggerText = trigger.querySelector('.btn_text') || trigger;
     triggerText.textContent = 'Contact';
+
+    if (mq767.matches) {
+      hideBackdrop();
+      overlay.style.position = '';
+      overlay.style.inset    = '';
+      overlay.style.zIndex   = '';
+    } else {
+      var mobileDropdown = document.getElementById('mobile-nav-dropdown');
+      if (mobileDropdown) mobileDropdown.style.visibility = '';
+    }
+
     overlay.style.transition = 'opacity ' + DURATION + 'ms ' + EASING;
     overlay.style.opacity = '0'; overlay.style.pointerEvents = 'none';
     timers.push(setTimeout(function () { overlay.style.display = 'none'; }, DURATION));
+
+    var cursor = document.querySelector('.custom-cursor');
+    if (cursor) { cursor.classList.remove('is-visible'); cursor.textContent = ''; }
   }
 
   overlay.style.opacity = '0'; overlay.style.display = 'none'; overlay.style.pointerEvents = 'none';
 
   trigger.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); isOpen ? closeContact() : openContact(); });
 
-  var touchStarted = false;
-  trigger.addEventListener('touchstart', function () { touchStarted = true; }, { passive: true });
   trigger.addEventListener('touchend', function (e) {
-    e.preventDefault(); e.stopPropagation(); touchStarted = false;
+    e.preventDefault(); e.stopPropagation();
     isOpen ? closeContact() : openContact();
   });
 
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && isOpen) closeContact(); });
-  overlay.addEventListener('click', function (e) { if (e.target === overlay) closeContact(); });
+
+  // Desktop only — nav links pass through, everything else outside overlay closes + blocks.
+  var navLinks = Array.from(document.querySelectorAll('.nav-logo, .nav-pagelinks'));
+  function inNavLinks(el) { return navLinks.some(function (n) { return n.contains(el); }); }
+
+  document.addEventListener('click', function (e) {
+    if (!isOpen || mq767.matches) return;
+    if (overlay.contains(e.target) || trigger.contains(e.target)) return;
+    if (!inNavLinks(e.target)) { e.preventDefault(); e.stopPropagation(); }
+    closeContact();
+  }, true);
+
+  var cursor = document.querySelector('.custom-cursor');
+  if (cursor) {
+    document.addEventListener('mousemove', function (e) {
+      if (!isOpen || mq767.matches) return;
+      var showClose = !overlay.contains(e.target) && !inNavLinks(e.target);
+      cursor.textContent = showClose ? 'Close' : '';
+      if (showClose) { cursor.classList.add('is-visible'); cursor.classList.remove('is-idle'); }
+      else           { cursor.classList.remove('is-visible'); }
+    });
+  }
 
   window.stadeContact = { open: openContact, close: closeContact };
 
@@ -1388,7 +1433,218 @@ window.Webflow.push(function () {
 
 
 /* ============================================================
-   12. PAGE TRANSITIONS — always last
+   12. STADE FM — SPOTIFY WIDGET
+   Reads the Spotify iframe from .stade-fm-widget, enforces
+   dark theme, removes Spotify default styles, fades in on load.
+   Size and position controlled entirely by Webflow container.
+   ============================================================ */
+(function () {
+
+  var EASING     = 'cubic-bezier(0.25, 0, 0.15, 1)';
+  var FADE_SPEED = 400;
+
+  var widget = document.querySelector('.stade-fm-widget');
+  if (!widget) return;
+
+  var iframe = widget.querySelector('iframe');
+  if (!iframe) return;
+
+  // Strip Spotify's inline styles (forces border-radius:12px by default)
+  iframe.removeAttribute('style');
+
+  // Enforce dark theme in src, preserve existing params
+  var src = (iframe.getAttribute('src') || '').replace(/[?&]theme=[^&]*/g, '');
+  src += (src.includes('?') ? '&' : '?') + 'theme=0&utm_source=generator';
+  iframe.src = src;
+
+  // Clean, minimal iframe styles — container controls size
+  iframe.style.cssText = [
+    'display:block', 'width:100%', 'height:100%',
+    'border:none', 'border-radius:0',
+    'opacity:0', 'transition:opacity ' + FADE_SPEED + 'ms ' + EASING
+  ].join(';');
+  iframe.setAttribute('frameborder', '0');
+
+  // Fade in once Spotify has loaded
+  iframe.addEventListener('load', function () { iframe.style.opacity = '1'; });
+  setTimeout(function () { iframe.style.opacity = '1'; }, 2500); // fallback
+
+})();
+
+
+/* ============================================================
+   13. CUSTOM AUDIO PLAYER
+   Reads track data from hidden .audio-track[data-src, data-title,
+   data-artist] divs inside .stade-audio-widget. Builds full
+   player UI inline — visual language matches the video player.
+   State classes: .is-playing / .is-muted on .audio-player.
+   ============================================================ */
+(function () {
+
+  var EASING     = 'cubic-bezier(0.25, 0, 0.15, 1)';
+  var FADE_SPEED = 300;
+  var C_TRACK    = 'rgba(0,0,0,0.15)';
+
+  var widget = document.querySelector('.stade-audio-widget');
+  if (!widget) return;
+
+  var trackEls = Array.from(widget.querySelectorAll('.audio-track[data-src]'));
+  if (!trackEls.length) return;
+
+  var tracks = trackEls.map(function (el) {
+    return {
+      src:    el.getAttribute('data-src'),
+      title:  el.getAttribute('data-title')  || 'Unknown Track',
+      artist: el.getAttribute('data-artist') || ''
+    };
+  });
+  trackEls.forEach(function (el) { el.style.display = 'none'; });
+
+  /* ── inject volume slider styles (can't do ::-webkit via inline) ── */
+  var styleTag = document.createElement('style');
+  styleTag.textContent = [
+    '.audio-player_volume-slider{-webkit-appearance:none;appearance:none;width:52px;height:2px;background:' + C_TRACK + ';border-radius:1px;cursor:pointer;outline:none;border:none}',
+    '.audio-player_volume-slider::-webkit-slider-thumb{-webkit-appearance:none;width:6px;height:6px;border-radius:50%;background:currentColor;cursor:pointer}',
+    '.audio-player_volume-slider::-moz-range-thumb{width:6px;height:6px;border-radius:50%;background:currentColor;border:none;cursor:pointer}',
+    '.audio-player_progress{cursor:pointer}',
+    '.audio-player_btn{cursor:pointer}'
+  ].join('');
+  document.head.appendChild(styleTag);
+
+  /* ── helpers ── */
+  function make(tag, cls, css) {
+    var el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (css) el.style.cssText = css;
+    return el;
+  }
+  function formatTime(s) {
+    if (!s || isNaN(s)) return '0:00';
+    var m = Math.floor(s / 60), sec = Math.floor(s % 60);
+    return m + ':' + (sec < 10 ? '0' : '') + sec;
+  }
+  var BTN_BASE = 'background:none;border:none;padding:0;color:inherit;font:inherit;cursor:pointer;transition:opacity 200ms ease';
+
+  /* ── audio element ── */
+  var audio = document.createElement('audio'); audio.preload = 'metadata';
+
+  /* ── state ── */
+  var currentIndex = 0, isPlaying = false;
+
+  /* ── build UI ── */
+  var player   = make('div',  'audio-player',
+    'display:flex;flex-direction:column;gap:14px;font-size:0.75rem;' +
+    'opacity:0;transition:opacity ' + FADE_SPEED + 'ms ' + EASING);
+
+  var infoWrap = make('div', 'audio-player_info',   'display:flex;flex-direction:column;gap:6px');
+  var titleEl  = make('div', 'audio-player_title');
+  var artistEl = make('div', 'audio-player_artist', 'opacity:0.4');
+
+  var bar      = make('div', 'audio-player_bar',
+    'display:flex;align-items:center;gap:16px');
+
+  var controls = make('div', 'audio-player_controls', 'display:flex;align-items:center;gap:14px;flex-shrink:0');
+  var prevBtn  = make('button', 'audio-player_btn is-prev', BTN_BASE + ';opacity:0.45'); prevBtn.type = 'button'; prevBtn.textContent = '←';
+  var playBtn  = make('button', 'audio-player_btn is-play', BTN_BASE + ';display:inline-block;width:1em;text-align:center'); playBtn.type = 'button'; playBtn.textContent = '▶';
+  var nextBtn  = make('button', 'audio-player_btn is-next', BTN_BASE + ';opacity:0.45'); nextBtn.type = 'button'; nextBtn.textContent = '→';
+
+  var progressWrap = make('div',  'audio-player_progress-wrap', 'flex:1;display:flex;align-items:center');
+  var progressBar  = make('div',  'audio-player_progress',
+    'flex:1;height:2px;background:' + C_TRACK + ';border-radius:1px;position:relative');
+  var progressFill = make('div',  'audio-player_progress-fill',
+    'position:absolute;left:0;top:0;bottom:0;width:0%;background:currentColor;border-radius:1px');
+
+  var timeWrap = make('div',  'audio-player_time',
+    'display:flex;gap:5px;flex-shrink:0;opacity:0.4;font-variant-numeric:tabular-nums');
+  var timeNow  = make('span', 'audio-player_time-current'); timeNow.textContent = '0:00';
+  var timeSep  = make('span', 'audio-player_time-sep');     timeSep.textContent = '/';
+  var timeTot  = make('span', 'audio-player_time-total');   timeTot.textContent = '0:00';
+
+  var volWrap  = make('div', 'audio-player_volume', 'display:flex;align-items:center;flex-shrink:0');
+  var volSlider = document.createElement('input');
+  volSlider.type = 'range'; volSlider.className = 'audio-player_volume-slider';
+  volSlider.min = '0'; volSlider.max = '1'; volSlider.step = '0.01'; volSlider.value = '1';
+
+  /* ── assemble ── */
+  infoWrap.appendChild(titleEl);  infoWrap.appendChild(artistEl);
+  controls.appendChild(prevBtn);  controls.appendChild(playBtn); controls.appendChild(nextBtn);
+  progressBar.appendChild(progressFill);
+  progressWrap.appendChild(progressBar);
+  timeWrap.appendChild(timeNow); timeWrap.appendChild(timeSep); timeWrap.appendChild(timeTot);
+  volWrap.appendChild(volSlider);
+  bar.appendChild(controls); bar.appendChild(progressWrap); bar.appendChild(timeWrap); bar.appendChild(volWrap);
+  player.appendChild(infoWrap); player.appendChild(bar);
+  widget.appendChild(player);
+
+  /* ── state update ── */
+  function updatePlayState() {
+    playBtn.textContent = isPlaying ? '■' : '▶';
+    player.classList.toggle('is-playing', isPlaying);
+  }
+
+  /* ── load track ── */
+  function loadTrack(index, autoplay) {
+    currentIndex = index;
+    var t = tracks[index];
+    titleEl.textContent  = t.title;
+    artistEl.textContent = t.artist;
+    audio.src = t.src;
+    progressFill.style.width = '0%';
+    timeNow.textContent = '0:00'; timeTot.textContent = '0:00';
+    isPlaying = false; updatePlayState();
+    if (autoplay) { audio.play().catch(function () {}); isPlaying = true; updatePlayState(); }
+  }
+
+  /* ── controls ── */
+  function togglePlay() {
+    if (isPlaying) { audio.pause(); isPlaying = false; }
+    else           { audio.play().catch(function () {}); isPlaying = true; }
+    updatePlayState();
+  }
+  function prevTrack() { loadTrack((currentIndex - 1 + tracks.length) % tracks.length, isPlaying); }
+  function nextTrack() { loadTrack((currentIndex + 1) % tracks.length, isPlaying); }
+
+  /* ── seek ── */
+  function seekFromEvent(e) {
+    var rect  = progressBar.getBoundingClientRect();
+    var ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    if (audio.duration) audio.currentTime = ratio * audio.duration;
+  }
+  var dragging = false;
+  progressBar.addEventListener('mousedown', function (e) { dragging = true; seekFromEvent(e); });
+  document.addEventListener('mousemove',   function (e) { if (dragging) seekFromEvent(e); });
+  document.addEventListener('mouseup',     function ()  { dragging = false; });
+  progressBar.addEventListener('touchstart', function (e) { seekFromEvent(e.touches[0]); }, { passive: true });
+  progressBar.addEventListener('touchmove',  function (e) { seekFromEvent(e.touches[0]); }, { passive: true });
+
+  /* ── volume ── */
+  volSlider.addEventListener('input', function () {
+    audio.volume = parseFloat(volSlider.value);
+    player.classList.toggle('is-muted', audio.volume === 0);
+  });
+
+  /* ── audio events ── */
+  audio.addEventListener('timeupdate', function () {
+    if (!audio.duration) return;
+    progressFill.style.width = (audio.currentTime / audio.duration * 100) + '%';
+    timeNow.textContent = formatTime(audio.currentTime);
+  });
+  audio.addEventListener('loadedmetadata', function () { timeTot.textContent = formatTime(audio.duration); });
+  audio.addEventListener('ended', nextTrack);
+
+  playBtn.addEventListener('click', togglePlay);
+  prevBtn.addEventListener('click', prevTrack);
+  nextBtn.addEventListener('click', nextTrack);
+
+  /* ── init ── */
+  loadTrack(0, false);
+  requestAnimationFrame(function () { requestAnimationFrame(function () { player.style.opacity = '1'; }); });
+
+})();
+
+
+/* ============================================================
+   14. PAGE TRANSITIONS — always last
    Creates overlay, fades out on load, fades in on navigate
    Intercepts all internal link clicks
    Exposes window.stadeNavigate(url) for programmatic navigation
