@@ -1483,40 +1483,293 @@ window.Webflow.push(function () {
 
 /* ============================================================
    12. STADE FM — SPOTIFY WIDGET
-   Reads the Spotify iframe from .stade-fm-widget, enforces
-   dark theme, removes Spotify default styles, fades in on load.
-   Size and position controlled entirely by Webflow container.
+   Uses Spotify's official iFrame API for real-time track data
+   and full playback control. The Spotify iframe is hidden;
+   all UI is custom-built with brand styling.
+
+   Layout: [Art | Playlist · Track · Artist / ⏮ ⏯ ⏭ ── ][Spotify logo]
+   Art updates to current track's album art once playback starts.
+   oEmbed seeds the initial playlist cover + name before API loads.
    ============================================================ */
 (function () {
 
   var EASING     = 'cubic-bezier(0.25, 0, 0.15, 1)';
   var FADE_SPEED = 400;
+  var BORDER     = '1px solid #000';
+  var OEMBED_BASE = 'https://open.spotify.com/oembed?url=';
+  var IFRAME_API  = 'https://open.spotify.com/embed/iframe-api/v1';
 
   var widget = document.querySelector('.stade-fm-widget');
   if (!widget) return;
 
-  var iframe = widget.querySelector('iframe');
-  if (!iframe) return;
+  var seedIframe = widget.querySelector('iframe');
+  if (!seedIframe) return;
 
-  // Strip Spotify's inline styles (forces border-radius:12px by default)
-  iframe.removeAttribute('style');
+  // Derive URLs from the embed src
+  var rawSrc   = seedIframe.getAttribute('src') || '';
+  var embedBase = rawSrc.split('?')[0]; // https://open.spotify.com/embed/playlist/xxx
+  var openUrl   = embedBase.replace('/embed/', '/');
+  // Convert embed URL → Spotify URI: spotify:playlist:xxx
+  var spotifyUri = 'spotify:' + embedBase
+    .replace('https://open.spotify.com/embed/', '')
+    .replace('/', ':');
 
-  // Enforce dark theme in src, preserve existing params
-  var src = (iframe.getAttribute('src') || '').replace(/[?&]theme=[^&]*/g, '');
-  src += (src.includes('?') ? '&' : '?') + 'theme=0&utm_source=generator';
-  iframe.src = src;
+  // Playback state
+  var controller = null;
+  var duration   = 0;
+  var posMs      = 0;
+  var posTs      = 0;
+  var rafId      = null;
 
-  // Clean, minimal iframe styles — container controls size
-  iframe.style.cssText = [
-    'display:block', 'width:100%', 'height:100%',
-    'border:none', 'border-radius:0',
+  // ── Helpers ──────────────────────────────────────────────────
+
+  function fmtMs(ms) {
+    var s = Math.floor((ms || 0) / 1000);
+    return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+  }
+
+  function lerp() {
+    if (!duration) return;
+    var now = Math.min(posMs + (Date.now() - posTs), duration);
+    progressFill.style.width = (now / duration * 100) + '%';
+    elCurrentTime.textContent = fmtMs(now);
+  }
+
+  function startTick() {
+    if (rafId) return;
+    (function tick() { lerp(); rafId = requestAnimationFrame(tick); })();
+  }
+
+  function stopTick() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  }
+
+  // ── Build UI ─────────────────────────────────────────────────
+
+  var shell = document.createElement('div');
+  shell.style.cssText = [
+    'display:flex', 'align-items:stretch', 'width:100%',
+    'background:#fff', 'border:' + BORDER,
+    'overflow:hidden', 'font-family:inherit', 'box-sizing:border-box',
     'opacity:0', 'transition:opacity ' + FADE_SPEED + 'ms ' + EASING
   ].join(';');
-  iframe.setAttribute('frameborder', '0');
 
-  // Fade in once Spotify has loaded
-  iframe.addEventListener('load', function () { iframe.style.opacity = '1'; });
-  setTimeout(function () { iframe.style.opacity = '1'; }, 2500); // fallback
+  // — Art column —
+  var artWrap = document.createElement('div');
+  artWrap.style.cssText = [
+    'flex-shrink:0', 'width:88px', 'position:relative',
+    'border-right:' + BORDER
+  ].join(';');
+  var artImg = document.createElement('img');
+  artImg.style.cssText = [
+    'display:block', 'width:100%', 'height:100%',
+    'object-fit:cover', 'position:absolute', 'inset:0'
+  ].join(';');
+  artImg.alt = '';
+  artWrap.appendChild(artImg);
+
+  // — Right panel —
+  var right = document.createElement('div');
+  right.style.cssText = 'display:flex;flex-direction:column;flex:1;min-width:0;';
+
+  // Info row
+  var infoRow = document.createElement('div');
+  infoRow.style.cssText = [
+    'position:relative', 'flex:1', 'display:flex', 'flex-direction:column',
+    'justify-content:center', 'gap:2px',
+    'padding:8px 30px 8px 14px',
+    'border-bottom:' + BORDER
+  ].join(';');
+
+  // Spotify logo — required by ToS, links to playlist
+  var spotifyLink = document.createElement('a');
+  spotifyLink.href = openUrl;
+  spotifyLink.target = '_blank';
+  spotifyLink.rel = 'noopener noreferrer';
+  spotifyLink.setAttribute('aria-label', 'Open on Spotify');
+  spotifyLink.style.cssText = [
+    'position:absolute', 'top:8px', 'right:8px',
+    'display:flex', 'align-items:center', 'justify-content:center',
+    'width:14px', 'height:14px', 'flex-shrink:0'
+  ].join(';');
+  spotifyLink.innerHTML = '<svg width="16" height="16" viewBox="0 0 168 168" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M84 0C37.6 0 0 37.6 0 84s37.6 84 84 84 84-37.6 84-84S130.4 0 84 0zm38.5 121.2c-1.5 2.5-4.7 3.3-7.2 1.8-19.7-12-44.5-14.7-73.7-8-2.8.6-5.5-1.1-6.2-3.9-.6-2.8 1.1-5.5 3.9-6.2 32-7.3 59.5-4.2 81.6 9.2 2.5 1.5 3.3 4.7 1.6 7.1zm10.3-22.9c-1.9 3.1-6 4.1-9.1 2.2-22.6-13.9-57-17.9-83.7-9.8-3.5 1.1-7.1-.9-8.2-4.4-1-3.5.9-7.1 4.4-8.2 30.5-9.3 68.4-4.8 94.4 11.2 3.1 1.9 4.1 6 2.2 9zm.9-23.8C109 60.4 67.5 59 43.8 66.4c-4.2 1.3-8.6-1-9.9-5.2-1.3-4.2 1-8.6 5.2-9.9 27.5-8.4 73.3-6.7 102.1 10.3 3.8 2.2 5.1 7 2.8 10.9-2.2 3.7-7 5-10.8 2.9z" fill="#000"/></svg>';
+
+  var elLabel = document.createElement('span');
+  elLabel.style.cssText = [
+    'display:block', 'font-size:8px', 'letter-spacing:0.1em',
+    'text-transform:uppercase', 'color:#000', 'font-family:inherit'
+  ].join(';');
+  elLabel.textContent = 'STADE FM';
+
+  var elTrackTitle = document.createElement('span');
+  elTrackTitle.style.cssText = [
+    'display:block', 'font-size:12px', 'font-weight:500', 'color:#000',
+    'font-family:inherit', 'white-space:nowrap', 'overflow:hidden', 'text-overflow:ellipsis'
+  ].join(';');
+  elTrackTitle.textContent = '\u2014';
+
+  var elArtistName = document.createElement('span');
+  elArtistName.style.cssText = [
+    'display:block', 'font-size:10px', 'color:#000', 'opacity:0.45',
+    'font-family:inherit', 'white-space:nowrap', 'overflow:hidden', 'text-overflow:ellipsis'
+  ].join(';');
+  elArtistName.textContent = '';
+
+  infoRow.appendChild(spotifyLink);
+  infoRow.appendChild(elLabel);
+  infoRow.appendChild(elTrackTitle);
+  infoRow.appendChild(elArtistName);
+
+  // Controls row
+  var ctrlRow = document.createElement('div');
+  ctrlRow.style.cssText = [
+    'display:flex', 'align-items:center',
+    'padding:0 12px', 'height:36px', 'gap:8px', 'flex-shrink:0'
+  ].join(';');
+
+  function makeBtn(ariaLabel, svgPath, size) {
+    var sz = size || 15;
+    var btn = document.createElement('button');
+    btn.setAttribute('type', 'button');
+    btn.setAttribute('aria-label', ariaLabel);
+    btn.style.cssText = [
+      'background:none', 'border:none', 'padding:0', 'margin:0',
+      'cursor:pointer', 'color:#000', 'display:flex',
+      'align-items:center', 'justify-content:center', 'flex-shrink:0'
+    ].join(';');
+    btn.innerHTML = '<svg width="' + sz + '" height="' + sz + '" viewBox="0 0 24 24" fill="currentColor">' + svgPath + '</svg>';
+    return btn;
+  }
+
+  var prevBtn = makeBtn('Previous', '<path d="M6 6h2v12H6zM9.5 12L18 6v12z"/>', 13);
+  var playBtn = makeBtn('Play', '<path d="M8 5v14l11-7z"/>', 16);
+  var nextBtn = makeBtn('Next',    '<path d="M14.5 12L6 6v12zM16 6h2v12h-2z"/>', 13);
+
+  var elCurrentTime = document.createElement('span');
+  elCurrentTime.style.cssText = 'font-size:9px;color:#000;opacity:0.4;font-family:inherit;flex-shrink:0;letter-spacing:0.05em;';
+  elCurrentTime.textContent = '0:00';
+
+  var progressWrap = document.createElement('div');
+  progressWrap.style.cssText = 'flex:1;height:1px;background:#000;opacity:0.15;position:relative;cursor:pointer;';
+  var progressFill = document.createElement('div');
+  progressFill.style.cssText = 'position:absolute;top:0;left:0;height:100%;background:#000;opacity:1;width:0%;';
+  progressWrap.appendChild(progressFill);
+
+  var elTotalTime = document.createElement('span');
+  elTotalTime.style.cssText = 'font-size:9px;color:#000;opacity:0.4;font-family:inherit;flex-shrink:0;letter-spacing:0.05em;';
+  elTotalTime.textContent = '0:00';
+
+  ctrlRow.appendChild(prevBtn);
+  ctrlRow.appendChild(playBtn);
+  ctrlRow.appendChild(nextBtn);
+  ctrlRow.appendChild(elCurrentTime);
+  ctrlRow.appendChild(progressWrap);
+  ctrlRow.appendChild(elTotalTime);
+
+  right.appendChild(infoRow);
+  right.appendChild(ctrlRow);
+  shell.appendChild(artWrap);
+  shell.appendChild(right);
+
+  // Zero-size container for Spotify's injected iframe.
+  // transform:scale(1) creates a new containing block so Spotify's fixed-position
+  // iframe can't escape it. overflow:hidden then clips it to nothing.
+  var apiMount = document.createElement('div');
+  apiMount.setAttribute('aria-hidden', 'true');
+  apiMount.style.cssText = 'width:0;height:0;overflow:hidden;transform:scale(1);pointer-events:none;';
+  document.body.appendChild(apiMount);
+
+  widget.innerHTML = '';
+  widget.appendChild(shell);
+
+  // ── Button events ─────────────────────────────────────────────
+
+  function setPlayIcon(playing) {
+    playBtn.innerHTML = playing
+      ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>'
+      : '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  }
+
+  playBtn.addEventListener('click', function () { if (controller) controller.togglePlay(); });
+  prevBtn.addEventListener('click', function () { if (controller) controller.previousTrack(); });
+  nextBtn.addEventListener('click', function () { if (controller) controller.nextTrack(); });
+
+  progressWrap.addEventListener('click', function (e) {
+    if (!controller || !duration) return;
+    var rect = progressWrap.getBoundingClientRect();
+    var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    controller.seek(Math.floor(pct * duration));
+  });
+
+  // ── Spotify iFrame API ────────────────────────────────────────
+
+  // The API injects iframes directly into <body> as siblings — watch for them
+  // and immediately apply hiding styles on the element itself.
+  var bodyObserver = new MutationObserver(function (mutations) {
+    mutations.forEach(function (m) {
+      m.addedNodes.forEach(function (node) {
+        if (node.nodeName === 'IFRAME' && node.src && node.src.indexOf('open.spotify.com') !== -1) {
+          node.style.cssText = 'position:fixed!important;top:-9999px!important;left:-9999px!important;width:1px!important;height:1px!important;pointer-events:none!important;';
+        }
+      });
+    });
+  });
+  bodyObserver.observe(document.body, { childList: true });
+
+  window.onSpotifyIframeApiReady = function (IFrameAPI) {
+    IFrameAPI.createController(apiMount, { uri: openUrl }, function (ctrl) {
+      controller = ctrl;
+
+      ctrl.addListener('playback_update', function (e) {
+        // Spotify wraps state in e.data; fall back to e directly if not wrapped
+        var d = (e && e.data !== undefined) ? e.data : e;
+        if (!d) return;
+        var playing = !d.isPaused;
+
+        setPlayIcon(playing);
+        if (playing) { startTick(); } else { stopTick(); lerp(); }
+
+        if (d.duration) {
+          duration = d.duration;
+          posMs    = d.position;
+          posTs    = Date.now();
+          elTotalTime.textContent = fmtMs(duration);
+        }
+
+        if (d.track) {
+          // API uses track.name — fall back to track.title just in case
+          var name = d.track.name || d.track.title;
+          if (name)                                   elTrackTitle.textContent = name;
+          if (d.track.artists && d.track.artists[0]) elArtistName.textContent = d.track.artists[0].name;
+          if (d.track.image_url)                      artImg.src = d.track.image_url;
+        }
+      });
+    });
+  };
+
+  if (!document.querySelector('script[src="' + IFRAME_API + '"]')) {
+    var script = document.createElement('script');
+    script.src = IFRAME_API;
+    script.async = true;
+    document.head.appendChild(script);
+  }
+
+  // ── oEmbed: seed cover + playlist name before API loads ──────
+
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', OEMBED_BASE + encodeURIComponent(openUrl));
+  xhr.onload = function () {
+    if (xhr.status === 200) {
+      try {
+        var data = JSON.parse(xhr.responseText);
+        if (data.thumbnail_url) artImg.src = data.thumbnail_url;
+        if (data.title)         elLabel.textContent = data.title;
+      } catch (e) {}
+    }
+    shell.style.opacity = '1';
+  };
+  xhr.onerror = function () { shell.style.opacity = '1'; };
+  xhr.send();
 
 })();
 
