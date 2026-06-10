@@ -752,6 +752,17 @@ window.Webflow.push(function () {
   function hideCursor()  { cursor.classList.remove('is-visible'); list.style.cursor = 'auto'; }
   function moveCursor(e) { cursor.style.transform = 'translate(calc(-50% + ' + e.clientX + 'px), calc(-50% + ' + e.clientY + 'px))'; }
 
+  // Position-based: works regardless of pointer-events on child elements.
+  function isOverVideo(e) {
+    var x = e.clientX, y = e.clientY;
+    var vids = list.querySelectorAll('[data-video]');
+    for (var i = 0; i < vids.length; i++) {
+      var r = vids[i].getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true;
+    }
+    return false;
+  }
+
   function getScrollState() {
     return {
       atStart: list.scrollLeft <= 2,
@@ -768,10 +779,40 @@ window.Webflow.push(function () {
     else                        setLabel('←\u00a0 Scroll \u00a0→');
   }
 
-  list.addEventListener('scroll',     function () { if (!isDragging) updateCursorLabel(false); });
-  list.addEventListener('mouseenter', function () { updateCursorLabel(false); showCursor(); });
-  list.addEventListener('mouseleave', hideCursor);
-  list.addEventListener('mousemove',  moveCursor);
+  var mouseX = -1, mouseY = -1;
+
+  // Returns the [data-video] wrap under the cursor, or null.
+  // Position-based so it works regardless of pointer-events on children
+  // and regardless of whether gallery scroll has moved elements.
+  function getVideoUnderCursor() {
+    if (mouseX < 0) return null;
+    var vids = list.querySelectorAll('[data-video]');
+    for (var i = 0; i < vids.length; i++) {
+      var r = vids[i].getBoundingClientRect();
+      if (mouseX >= r.left && mouseX <= r.right && mouseY >= r.top && mouseY <= r.bottom) return vids[i];
+    }
+    return null;
+  }
+
+  // Single source of truth for cursor state.
+  // Called on every mousemove and scroll — no flags, no state machine.
+  function syncCursor() {
+    var vw = getVideoUnderCursor();
+    if (vw) {
+      var vid = vw.querySelector('video');
+      setLabel(vid && !vid.paused ? 'Pause' : 'Play');
+      list.style.cursor = 'auto'; // video wrap already has cursor:none
+    } else {
+      updateCursorLabel(false);
+      list.style.cursor = 'none';
+    }
+    cursor.classList.add('is-visible');
+  }
+
+  list.addEventListener('scroll',    function ()  { if (!isDragging) { if (mouseX >= 0) syncCursor(); else updateCursorLabel(false); } });
+  list.addEventListener('mouseenter', function (e) { mouseX = e.clientX; mouseY = e.clientY; syncCursor(); });
+  list.addEventListener('mouseleave', function ()  { mouseX = -1; mouseY = -1; hideCursor(); });
+  list.addEventListener('mousemove',  function (e) { mouseX = e.clientX; mouseY = e.clientY; moveCursor(e); syncCursor(); });
 
   var wheelTarget = 0, wheelCurrent = 0, wheelRaf = null;
 
@@ -784,6 +825,7 @@ window.Webflow.push(function () {
   }
 
   list.addEventListener('wheel', function (e) {
+    if (getVideoUnderCursor()) { wheelTarget = wheelCurrent = list.scrollLeft; return; }
     if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) return;
     e.preventDefault();
     if (!wheelRaf) wheelCurrent = list.scrollLeft;
@@ -810,6 +852,7 @@ window.Webflow.push(function () {
   }
 
   function onDragStart(e) {
+    if (isOverVideo(e)) return;
     if (rafId)    { cancelAnimationFrame(rafId);    rafId    = null; }
     if (wheelRaf) { cancelAnimationFrame(wheelRaf); wheelRaf = null; }
     isDragging  = true;
@@ -935,39 +978,52 @@ window.Webflow.push(function () {
     return slider;
   }
 
+  var allPauseFns = [];
+
   Array.from(document.querySelectorAll('[data-video]')).forEach(function (wrap) {
     var video = wrap.querySelector('video');
     if (!video) return;
-    var mode    = wrap.getAttribute('data-video') || 'click';
-    var passive = wrap.hasAttribute('data-passive');
-    var autoplay = wrap.hasAttribute('data-autoplay');
+    var mode      = wrap.getAttribute('data-video') || 'click';
+    var passive   = wrap.hasAttribute('data-passive');
+    var autoplay  = wrap.hasAttribute('data-autoplay');
+    // Gallery videos: Section 5 owns the cursor entirely (syncCursor reads video.paused
+    // on every mousemove/scroll). Skip all cursor management here to avoid conflicts.
+    var inGallery = !!wrap.closest('.cms-work_gallery-list');
     if (autoplay || passive || mode === 'hover') video.muted = true;
     var isPlaying = false, hasAudio = !video.muted;
-    if (!passive) wrap.style.cursor = 'none';
+    if (!passive) {
+      wrap.style.cursor = 'none';
+      if (!inGallery) wrap.setAttribute('data-cursor-exclude', '');
+    }
     var posterEl = wrap.querySelector('.video-poster');
     if (posterEl) posterEl.style.cssText += ';position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:2;pointer-events:none;transition:opacity '+FADE_DURATION+'ms '+EASING;
     var volSlider = hasAudio ? buildVolumeSlider(wrap, video) : null;
     function play() {
+      allPauseFns.forEach(function (fn) { if (fn !== pause) fn(); });
       video.play().then(function () {
         isPlaying = true; wrap.classList.add('is-playing');
-        if (!passive) setCursorLabel('Pause');
+        if (!passive && !inGallery) setCursorLabel('Pause');
         if (posterEl) posterEl.style.opacity = '0';
       }).catch(function () {});
     }
     function pause() {
       video.pause(); isPlaying = false; wrap.classList.remove('is-playing');
-      if (!passive) setCursorLabel('Play');
+      if (!passive && !inGallery) setCursorLabel('Play');
       if (posterEl) posterEl.style.opacity = '1';
     }
+    allPauseFns.push(pause);
     if (!passive) {
-      wrap.addEventListener('mouseenter', function () {
-        setCursorLabel(isPlaying ? 'Pause' : 'Play'); showCursor(wrap);
-        if (volSlider) { volSlider.style.opacity = '1'; volSlider.style.pointerEvents = 'auto'; volSlider.dataset.hovered = 'true'; }
-      });
-      wrap.addEventListener('mouseleave', function () {
-        hideCursor(wrap);
-        if (volSlider) { volSlider.style.opacity = '0'; volSlider.style.pointerEvents = 'none'; volSlider.dataset.hovered = 'false'; }
-      });
+      if (!inGallery) {
+        // Non-gallery: Section 6 manages the cursor label and visibility.
+        wrap.addEventListener('mouseenter', function () {
+          setCursorLabel(isPlaying ? 'Pause' : 'Play'); showCursor(wrap);
+          if (volSlider) { volSlider.style.opacity = '1'; volSlider.style.pointerEvents = 'auto'; volSlider.dataset.hovered = 'true'; }
+        });
+        wrap.addEventListener('mouseleave', function () {
+          hideCursor(wrap);
+          if (volSlider) { volSlider.style.opacity = '0'; volSlider.style.pointerEvents = 'none'; volSlider.dataset.hovered = 'false'; }
+        });
+      }
       if (mode === 'hover') {
         wrap.addEventListener('mouseenter', function () { play(); });
         wrap.addEventListener('mouseleave', function () { pause(); });
@@ -997,7 +1053,12 @@ window.Webflow.push(function () {
       if (lazy && !hasEnteredOnce) { cursor.classList.remove('is-visible'); } else { showCursor(el); }
     });
     el.addEventListener('mousemove', function () {
-      if (lazy && !hasEnteredOnce) { hasEnteredOnce = true; showCursor(el); }
+      if (lazy && !hasEnteredOnce) {
+        // Don't activate if a child element (e.g. a video) already owns the cursor —
+        // mousemove bubbles, so this fires even while over nested interactive elements.
+        if (cursorOwner && cursorOwner !== el && el.contains(cursorOwner)) return;
+        hasEnteredOnce = true; showCursor(el);
+      }
     });
     el.addEventListener('mouseleave', function () { hideCursor(el); });
     el.addEventListener('click', function () {
@@ -1067,66 +1128,91 @@ window.Webflow.push(function () {
 
 /* ============================================================
    8. TEAM BIO HOVER
-   .team_bio-info is already positioned by Webflow CSS inside
-   each .team-member_wrapper. JS just fades it in/out on hover.
-   Mobile: tap to toggle, stacks naturally in document flow.
+   Above 767px: bios hidden by default, revealed on name hover.
+   767px and below: JS does nothing — CSS controls layout entirely.
+   Portrait revert: swap trigger to the .team-member_wrapper element.
    ============================================================ */
 (function () {
 
   var EASING   = 'cubic-bezier(0.25, 0, 0.15, 1)';
   var DURATION = 300;
-  var isMobile = window.matchMedia('(max-width: 767px)').matches;
+  var mq       = window.matchMedia('(max-width: 767px)');
+  var inited   = false;
+  var allBios  = [];
+
+  function applyDesktop() {
+    // Kill transition first so the opacity:0 is instantaneous — no visible flash
+    // when crossing back up from mobile. Restore transition on the next paint
+    // so hover fades work normally from that point on.
+    allBios.forEach(function (bio) {
+      bio.style.transition    = 'none';
+      bio.style.opacity       = '0';
+      bio.style.pointerEvents = 'none';
+    });
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        allBios.forEach(function (bio) {
+          bio.style.transition = 'opacity ' + DURATION + 'ms ' + EASING;
+        });
+      });
+    });
+  }
+
+  function applyMobile() {
+    allBios.forEach(function (bio) {
+      bio.style.opacity       = '1';
+      bio.style.pointerEvents = 'auto';
+      bio.style.transition    = '';
+    });
+  }
 
   function init() {
-    var members = Array.from(document.querySelectorAll('.team-member_wrapper'));
-    if (!members.length) return;
+    if (inited) return;
 
-    members.forEach(function (member) {
-      var bio = member.querySelector('.team_bio-info');
-      if (!bio) return;
+    var bios = Array.from(document.querySelectorAll('.team_bio-info'));
+    if (!bios.length) return;
+    inited  = true;
+    allBios = bios;
 
-      if (!isMobile) {
-        bio.style.opacity       = '0';
-        bio.style.pointerEvents = 'none';
-        bio.style.transition    = 'opacity ' + DURATION + 'ms ' + EASING;
-
-        member.addEventListener('mouseenter', function () {
-          bio.style.opacity = '1'; bio.style.pointerEvents = 'auto';
-          member.classList.add('is-active');
-        });
-        member.addEventListener('mouseleave', function () {
-          bio.style.opacity = '0'; bio.style.pointerEvents = 'none';
-          member.classList.remove('is-active');
-        });
-
-      } else {
-        bio.style.overflow   = 'hidden';
-        bio.style.maxHeight  = '0';
-        bio.style.opacity    = '0';
-        bio.style.transition = 'opacity ' + DURATION + 'ms ' + EASING + ', max-height ' + DURATION + 'ms ' + EASING;
-
-        var isOpen = false;
-        member.addEventListener('click', function () {
-          if (isOpen) {
-            bio.style.opacity = '0'; bio.style.maxHeight = '0';
-            member.classList.remove('is-active'); isOpen = false;
-          } else {
-            members.forEach(function (m) {
-              var b = m.querySelector('.team_bio-info');
-              if (b) { b.style.opacity = '0'; b.style.maxHeight = '0'; }
-              m.classList.remove('is-active');
-            });
-            bio.style.opacity = '1'; bio.style.maxHeight = '500px';
-            member.classList.add('is-active'); isOpen = true;
-          }
-        });
+    bios.forEach(function (bio) {
+      // Walk up to the per-person wrapper to scope the name query correctly.
+      // Portrait revert: replace walk-up with member = closest('.team-member_wrapper').
+      var wrapper = bio.parentElement;
+      while (wrapper && !wrapper.classList.contains('roster-list_item_wrapper')) {
+        wrapper = wrapper.parentElement;
       }
+      if (!wrapper) return;
+
+      var nameEl  = wrapper.querySelector('.roster-list_name');
+      // Portrait trigger (re-enable when thumbnails are ready — swap to: var trigger = wrapper):
+      var trigger = nameEl || wrapper;
+      trigger.style.cursor     = 'default';
+      trigger.style.userSelect = 'none';
+
+      // Listeners always attached; mq.matches checked live so resize is handled automatically.
+      trigger.addEventListener('mouseenter', function () {
+        if (mq.matches) return;
+        bios.forEach(function (b) { b.style.opacity = '0'; b.style.pointerEvents = 'none'; });
+        bio.style.opacity = '1'; bio.style.pointerEvents = 'auto';
+        wrapper.classList.add('is-active');
+      });
+      wrapper.addEventListener('mouseleave', function () {
+        if (mq.matches) return;
+        bio.style.opacity = '0'; bio.style.pointerEvents = 'none';
+        wrapper.classList.remove('is-active');
+      });
     });
+
+    // Apply correct initial state and respond to breakpoint crossings on resize.
+    mq.matches ? applyMobile() : applyDesktop();
+    var mqHandler = function (e) { e.matches ? applyMobile() : applyDesktop(); };
+    if (mq.addEventListener) { mq.addEventListener('change', mqHandler); }
+    else if (mq.addListener) { mq.addListener(mqHandler); } // Safari < 14
   }
 
   var attempts = 0;
   function tryInit() {
-    if (document.querySelectorAll('.team-member_wrapper').length) { init(); }
+    if (document.querySelectorAll('.team_bio-info').length) { init(); }
     else if (attempts++ < 20) { setTimeout(tryInit, 150); }
   }
 
@@ -1228,17 +1314,16 @@ window.Webflow.push(function () {
       if (mobileDropdown) mobileDropdown.style.visibility = 'hidden';
     }
 
-    overlay.style.display        = 'flex';
-    overlay.style.alignItems     = 'center';
-    overlay.style.justifyContent = 'center';
-    overlay.style.pointerEvents  = 'auto';
-    overlay.getBoundingClientRect();
-    overlay.style.transition = 'opacity ' + DURATION + 'ms ' + EASING;
-    overlay.style.opacity    = '1';
-
+    // Preset children to start state BEFORE reflow so layout is stable on first paint
     staggerEls.forEach(function (el) {
       el.style.transition = 'none'; el.style.opacity = '0'; el.style.transform = 'translateY(8px)';
     });
+
+    overlay.style.display       = 'flex';
+    overlay.style.pointerEvents = 'auto';
+    overlay.getBoundingClientRect();
+    overlay.style.transition = 'opacity ' + DURATION + 'ms ' + EASING;
+    overlay.style.opacity    = '1';
     staggerEls.forEach(function (el, i) {
       timers.push(setTimeout(function () {
         el.style.transition = 'opacity ' + DURATION + 'ms ' + EASING + ', transform ' + DURATION + 'ms ' + EASING;
@@ -1266,11 +1351,9 @@ window.Webflow.push(function () {
       if (mobileDropdown) mobileDropdown.style.visibility = '';
     }
 
-    overlay.style.transition     = 'opacity ' + DURATION + 'ms ' + EASING;
-    overlay.style.opacity        = '0';
-    overlay.style.pointerEvents  = 'none';
-    overlay.style.alignItems     = '';
-    overlay.style.justifyContent = '';
+    overlay.style.transition    = 'opacity ' + DURATION + 'ms ' + EASING;
+    overlay.style.opacity       = '0';
+    overlay.style.pointerEvents = 'none';
 
     timers.push(setTimeout(function () {
       overlay.style.display = 'none';
@@ -1493,14 +1576,24 @@ window.Webflow.push(function () {
    ============================================================ */
 (function () {
 
-  var EASING     = 'cubic-bezier(0.25, 0, 0.15, 1)';
-  var FADE_SPEED = 400;
-  var BORDER     = '1px solid #000';
+  var EASING      = 'cubic-bezier(0.25, 0, 0.15, 1)';
+  var FADE_SPEED  = 400;
+  var BORDER      = '1px solid #000';
   var OEMBED_BASE = 'https://open.spotify.com/oembed?url=';
   var IFRAME_API  = 'https://open.spotify.com/embed/iframe-api/v1';
+  // Client credentials — read-only public playlist access, no user data
+  var CLIENT_ID     = '3884805f7de7413090d56a3d8b4449e2';
+  var CLIENT_SECRET = '69a0a43afe0f4af7968c87d3fb94ef4e';
+  var SLIDE_DURATION = 400;
+  var SLIDE_KEY      = 'stade-fm-hidden';
+  var DEFAULT_MODE   = 'native';
+  var TAB_WIDTH      = 20;
+  var RADIUS         = '4px'; // match .custom-cursor border-radius — adjust to taste
 
   var widget = document.querySelector('.stade-fm-widget');
   if (!widget) return;
+  if (widget.getAttribute('data-fm-init')) return;
+  widget.setAttribute('data-fm-init', '1');
 
   var seedIframe = widget.querySelector('iframe');
   if (!seedIframe) return;
@@ -1514,12 +1607,223 @@ window.Webflow.push(function () {
     .replace('https://open.spotify.com/embed/', '')
     .replace('/', ':');
 
+  // ── Player mode: ?player=native shows stock embed; default is custom UI ──
+  var modeMatch  = window.location.search.match(/[?&]player=([^&]*)/);
+  var playerMode = modeMatch ? modeMatch[1] : DEFAULT_MODE;
+
+  if (playerMode === 'native') {
+    // theme=0 = dark (black/gray). Default Spotify embed is light green/white.
+    var nativeSrc = rawSrc.split('?')[0] + '?utm_source=generator&theme=0';
+    // Read the height Webflow set on the embed element before we touch anything.
+    // Fall back to the widget's current rendered height, then 80px.
+    var embedH = parseInt(seedIframe.getAttribute('height'), 10)
+              || widget.offsetHeight
+              || 80;
+
+    // Explicit pixel height so the iframe doesn't revert to any default.
+    // src is set later (shuffle picks a random track, falls back to playlist).
+    seedIframe.style.cssText = 'border:none;display:block;width:100%;height:' + embedH + 'px;';
+
+    // Dark shell: exactly embedH + 2px padding top/bottom. border-box so padding
+    // is included in the declared height, leaving embedH for the iframe content.
+    var nativeShell = document.createElement('div');
+    nativeShell.style.cssText = [
+      'display:block', 'width:100%',
+      'height:' + (embedH + 4) + 'px',
+      'background:#1E1E1E', 'overflow:hidden',
+      'padding:2px', 'box-sizing:border-box',
+      'border-radius:' + RADIUS,
+      'opacity:0', 'transform:translateY(12px)',
+      'transition:opacity 600ms ' + EASING + ', transform 600ms ' + EASING
+    ].join(';');
+    nativeShell.appendChild(seedIframe);
+
+    // Shuffle: fetch a random track from the playlist via client credentials.
+    // Falls back to the full playlist embed if the API returns 403 or fails.
+    var ntvFadeDone = false;
+    // API timeout: if token/tracks fetch stalls, fall back to playlist embed.
+    var ntvFallbackTimer = setTimeout(function () { ntvFadeIn(nativeSrc); }, 1500);
+
+    function ntvReveal() {
+      // Wait for the embed's internal layout to settle before revealing.
+      // The 'load' event fires when the iframe HTML is parsed; the extra
+      // 600 ms masks the icon/spacing reflow that Spotify's JS triggers.
+      var ntvRevealDone = false;
+      var ntvRevealTimer = setTimeout(function () {
+        if (!ntvRevealDone) {
+        ntvRevealDone = true;
+        nativeShell.style.opacity = '1';
+        nativeShell.style.transform = 'translateY(0)';
+      }
+      }, 4000);
+      seedIframe.addEventListener('load', function () {
+        if (ntvRevealDone) { return; }
+        ntvRevealDone = true;
+        clearTimeout(ntvRevealTimer);
+        setTimeout(function () {
+          nativeShell.style.opacity = '1';
+          nativeShell.style.transform = 'translateY(0)';
+        }, 600);
+      });
+    }
+
+    function ntvFadeIn(src) {
+      if (ntvFadeDone) { return; }
+      ntvFadeDone = true;
+      clearTimeout(ntvFallbackTimer);
+      seedIframe.src = src;
+      ntvReveal();
+    }
+
+    var ntvPlaylistId = rawSrc.split('/playlist/')[1];
+    ntvPlaylistId = ntvPlaylistId ? ntvPlaylistId.split('?')[0].trim() : null;
+
+    if (ntvPlaylistId) {
+      var ntvTokenXhr = new XMLHttpRequest();
+      ntvTokenXhr.open('POST', 'https://accounts.spotify.com/api/token');
+      ntvTokenXhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+      ntvTokenXhr.setRequestHeader('Authorization', 'Basic ' + btoa(CLIENT_ID + ':' + CLIENT_SECRET));
+      ntvTokenXhr.onload = function () {
+        if (ntvTokenXhr.status !== 200) { ntvFadeIn(nativeSrc); return; }
+        var ntvTokData;
+        try { ntvTokData = JSON.parse(ntvTokenXhr.responseText); } catch (e) { ntvFadeIn(nativeSrc); return; }
+        var ntvToken = ntvTokData.access_token;
+        if (!ntvToken) { ntvFadeIn(nativeSrc); return; }
+        var ntvTracksXhr = new XMLHttpRequest();
+        ntvTracksXhr.open('GET', 'https://api.spotify.com/v1/playlists/' + ntvPlaylistId + '/tracks?limit=100&fields=items(track(id))');
+        ntvTracksXhr.setRequestHeader('Authorization', 'Bearer ' + ntvToken);
+        ntvTracksXhr.onload = function () {
+          if (ntvTracksXhr.status !== 200) { ntvFadeIn(nativeSrc); return; }
+          var ntvData;
+          try { ntvData = JSON.parse(ntvTracksXhr.responseText); } catch (e) { ntvFadeIn(nativeSrc); return; }
+          var ntvItems = ntvData.items;
+          if (!ntvItems || !ntvItems.length) { ntvFadeIn(nativeSrc); return; }
+          var ntvIds = [];
+          for (var ni = 0; ni < ntvItems.length; ni++) {
+            if (ntvItems[ni] && ntvItems[ni].track && ntvItems[ni].track.id) {
+              ntvIds.push(ntvItems[ni].track.id);
+            }
+          }
+          if (!ntvIds.length) { ntvFadeIn(nativeSrc); return; }
+          var ntvPick = ntvIds[Math.floor(Math.random() * ntvIds.length)];
+          ntvFadeIn('https://open.spotify.com/embed/track/' + ntvPick + '?utm_source=generator&theme=0');
+        };
+        ntvTracksXhr.onerror = function () { ntvFadeIn(nativeSrc); };
+        ntvTracksXhr.send();
+      };
+      ntvTokenXhr.onerror = function () { ntvFadeIn(nativeSrc); };
+      ntvTokenXhr.send('grant_type=client_credentials');
+    } else {
+      ntvFadeIn(nativeSrc);
+    }
+
+    // Pin the widget to the same height so Webflow's sizing doesn't interfere.
+    widget.style.height = (embedH + 4) + 'px';
+
+    // No overflow:hidden on widget — lets the tab slide past the widget boundary
+    // to the screen edge. The viewport clips the shell naturally once off-screen.
+
+    // ── Slide panel (same mechanic as custom mode) ────────────
+
+    // Read the cursor element's computed typography so the tab labels
+    // feel like they belong to the same design system.
+    var _ntvCursor = document.querySelector('.custom-cursor');
+    var _ntvCS     = _ntvCursor ? window.getComputedStyle(_ntvCursor) : null;
+    var ntvTabFontSize = _ntvCS ? _ntvCS.fontSize : '10px';
+    var ntvTabLS       = (_ntvCS && _ntvCS.letterSpacing && _ntvCS.letterSpacing !== '0px')
+                         ? _ntvCS.letterSpacing : '0.08em';
+
+    var ntvLabelStyle = 'display:block;writing-mode:vertical-rl;text-orientation:mixed;' +
+      'font-size:' + ntvTabFontSize + ';letter-spacing:' + ntvTabLS + ';' +
+      'text-transform:uppercase;font-family:inherit;line-height:1;color:inherit;';
+    var ntvLabelHide = '<span style="' + ntvLabelStyle + '">HIDE</span>';
+    var ntvLabelShow = '<span style="' + ntvLabelStyle + '">STADE FM</span>';
+
+    var ntvPanel = document.createElement('div');
+    ntvPanel.style.cssText = [
+      'display:flex', 'flex-direction:row', 'align-items:center', 'width:100%',
+      'transition:transform ' + SLIDE_DURATION + 'ms ' + EASING
+    ].join(';');
+
+    var ntvTab = document.createElement('button');
+    ntvTab.setAttribute('type', 'button');
+    ntvTab.setAttribute('aria-label', 'Hide player');
+    ntvTab.style.cssText = [
+      'width:' + TAB_WIDTH + 'px', 'flex-shrink:0', 'align-self:center',
+      'background:#1a1a1a', 'border:none',
+      'border-radius:0 ' + RADIUS + ' ' + RADIUS + ' 0',
+      'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
+      'padding:6px 0', 'color:rgba(255,255,255,0.7)',
+      'opacity:0', 'transition:opacity 200ms ease'
+    ].join(';');
+    ntvTab.innerHTML = ntvLabelHide;
+
+    ntvPanel.appendChild(nativeShell);
+    ntvPanel.appendChild(ntvTab);
+    widget.innerHTML = '';
+    widget.appendChild(ntvPanel);
+
+    var ntvHidden = sessionStorage.getItem(SLIDE_KEY) === '1';
+
+    function ntvUpdateTab(hidden) {
+      ntvTab.innerHTML = hidden ? ntvLabelShow : ntvLabelHide;
+      ntvTab.setAttribute('aria-label', hidden ? 'Show player' : 'Hide player');
+      // Collapsed: tab is always visible — it's the only affordance to reopen.
+      // Expanded: visibility is driven by hover state on the panel.
+      if (hidden) { ntvTab.style.opacity = '1'; }
+    }
+
+    function ntvSetSlide(hidden, animate) {
+      if (!animate) {
+        ntvPanel.style.transition = 'none';
+      } else {
+        ntvPanel.style.transition = 'transform ' + SLIDE_DURATION + 'ms ' + EASING;
+      }
+      if (hidden) {
+        var ntvLeftGap = Math.max(0, Math.round(widget.getBoundingClientRect().left));
+        ntvPanel.style.transform = 'translateX(calc(-100% + ' + TAB_WIDTH + 'px - ' + ntvLeftGap + 'px))';
+      } else {
+        ntvPanel.style.transform = 'translateX(0)';
+      }
+      ntvUpdateTab(hidden);
+      if (!animate) {
+        requestAnimationFrame(function () {
+          ntvPanel.style.transition = 'transform ' + SLIDE_DURATION + 'ms ' + EASING;
+        });
+      }
+    }
+
+    requestAnimationFrame(function () { ntvSetSlide(ntvHidden, false); });
+
+    ntvTab.addEventListener('click', function () {
+      ntvHidden = !ntvHidden;
+      sessionStorage.setItem(SLIDE_KEY, ntvHidden ? '1' : '0');
+      ntvSetSlide(ntvHidden, true);
+    });
+
+    // Tab is hidden until the cursor enters the widget area.
+    // When collapsed the tab stays visible — it is the only clickable target.
+    var ntvTabHover = false;
+    ntvPanel.addEventListener('mouseenter', function () {
+      ntvTabHover = true;
+      ntvTab.style.opacity = '1';
+    });
+    ntvPanel.addEventListener('mouseleave', function () {
+      ntvTabHover = false;
+      if (!ntvHidden) { ntvTab.style.opacity = '0'; }
+    });
+
+    return;
+  }
+
   // Playback state
-  var controller = null;
-  var duration   = 0;
-  var posMs      = 0;
-  var posTs      = 0;
-  var rafId      = null;
+  var controller    = null;
+  var duration      = 0;
+  var posMs         = 0;
+  var posTs         = 0;
+  var rafId         = null;
+  var trackList     = []; // [{name, artist, duration}] fetched from Web API
+  var currentIndex  = 0;  // current track position within playlist
 
   // ── Helpers ──────────────────────────────────────────────────
 
@@ -1544,14 +1848,62 @@ window.Webflow.push(function () {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   }
 
+  // ── Spotify Web API ───────────────────────────────────────────
+
+  function fetchToken(cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', 'https://accounts.spotify.com/api/token');
+    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    xhr.setRequestHeader('Authorization', 'Basic ' + btoa(CLIENT_ID + ':' + CLIENT_SECRET));
+    xhr.onload = function () {
+      if (xhr.status === 200) {
+        try { cb(JSON.parse(xhr.responseText).access_token); } catch (e) {}
+      }
+    };
+    xhr.send('grant_type=client_credentials');
+  }
+
+  function fetchPlaylistTracks(token, playlistId, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'https://api.spotify.com/v1/playlists/' + playlistId + '/tracks?limit=100');
+    xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+    xhr.onload = function () {
+      if (xhr.status === 200) {
+        try {
+          var items = JSON.parse(xhr.responseText).items;
+          cb(items.filter(function (i) { return i.track; }).map(function (i) {
+            return {
+              name:     i.track.name,
+              artist:   i.track.artists[0] ? i.track.artists[0].name : '',
+              duration: i.track.duration_ms
+            };
+          }));
+        } catch (e) {}
+      } else {
+        console.log('[StadeFM] Tracks fetch failed:', xhr.status, xhr.responseText);
+      }
+    };
+    xhr.send();
+  }
+
+  // Match current track by duration (±1.5 s tolerance — unique enough in practice)
+  function trackFromDuration(ms) {
+    for (var i = 0; i < trackList.length; i++) {
+      if (Math.abs(trackList[i].duration - ms) < 1500) return trackList[i];
+    }
+    return null;
+  }
+
   // ── Build UI ─────────────────────────────────────────────────
 
   var shell = document.createElement('div');
   shell.style.cssText = [
-    'display:flex', 'align-items:stretch', 'width:100%',
-    'background:#fff', 'border:' + BORDER,
+    'display:flex', 'align-items:stretch', 'flex:1', 'min-width:0',
+    'background:#fff',
     'overflow:hidden', 'font-family:inherit', 'box-sizing:border-box',
-    'opacity:0', 'transition:opacity ' + FADE_SPEED + 'ms ' + EASING
+    'border-radius:' + RADIUS,
+    'opacity:0',
+    'transition:opacity ' + FADE_SPEED + 'ms ' + EASING
   ].join(';');
 
   // — Art column —
@@ -1671,16 +2023,104 @@ window.Webflow.push(function () {
   shell.appendChild(artWrap);
   shell.appendChild(right);
 
-  // Zero-size container for Spotify's injected iframe.
-  // transform:scale(1) creates a new containing block so Spotify's fixed-position
-  // iframe can't escape it. overflow:hidden then clips it to nothing.
+  // apiMount: zero-size container on body for Spotify's iframe.
+  // transform:scale(1) traps Spotify's fixed-position iframe inside it;
+  // overflow:hidden clips it to nothing. Keeps it out of the widget entirely.
   var apiMount = document.createElement('div');
   apiMount.setAttribute('aria-hidden', 'true');
-  apiMount.style.cssText = 'width:0;height:0;overflow:hidden;transform:scale(1);pointer-events:none;';
+  // Fixed bottom-right, real dimensions, fully in viewport — passes Spotify's
+  // visibility check. opacity:0 hides it from users without affecting geometry.
+  // transform:scale(1) traps Spotify's fixed-position iframe inside the bounds.
+  // overflow:hidden clips it so nothing bleeds out visually.
+  apiMount.style.cssText = 'position:fixed;bottom:0;right:0;width:300px;height:80px;opacity:0;overflow:hidden;transform:scale(1);pointer-events:none;';
   document.body.appendChild(apiMount);
 
+  // No overflow:hidden on widget — lets the tab slide past the widget boundary
+  // to the screen edge. The viewport clips the shell naturally once off-screen.
+
+  // ── Slide panel: [fmTab][shell] ───────────────────────────────
+  // The whole panel slides left as one unit. fmTab hugs the right of the shell.
+  // When hidden, the panel translates left by shell.offsetWidth — shell exits
+  // off-screen left, tab arrives at the widget's left edge (screen left edge).
+
+  var fmPanel = document.createElement('div');
+  fmPanel.style.cssText = [
+    'display:flex', 'flex-direction:row', 'align-items:stretch', 'width:100%',
+    'transition:transform ' + SLIDE_DURATION + 'ms ' + EASING
+  ].join(';');
+
+  // Tab labels — typography pulled directly from .custom-cursor computed styles
+  // so they feel like they belong to the same design system.
+  var _fmCursor = document.querySelector('.custom-cursor');
+  var _fmCS     = _fmCursor ? window.getComputedStyle(_fmCursor) : null;
+  var fmTabFontSize = _fmCS ? _fmCS.fontSize : '10px';
+  var fmTabLS       = (_fmCS && _fmCS.letterSpacing && _fmCS.letterSpacing !== '0px')
+                      ? _fmCS.letterSpacing : '0.08em';
+  var fmTabColor    = _fmCS ? _fmCS.color : '#000';
+
+  var TAB_LABEL = 'display:block;writing-mode:vertical-rl;text-orientation:mixed;' +
+    'font-size:' + fmTabFontSize + ';letter-spacing:' + fmTabLS + ';' +
+    'text-transform:uppercase;font-family:inherit;line-height:1;color:inherit;';
+  var labelHide = '<span style="' + TAB_LABEL + '">HIDE</span>';
+  var labelShow = '<span style="' + TAB_LABEL + '">STADE FM</span>';
+
+  var fmTab = document.createElement('button');
+  fmTab.setAttribute('type', 'button');
+  fmTab.setAttribute('aria-label', 'Hide player');
+  fmTab.style.cssText = [
+    'width:' + TAB_WIDTH + 'px', 'flex-shrink:0', 'align-self:center',
+    'background:#fff', 'border:none',
+    'border-radius:0 ' + RADIUS + ' ' + RADIUS + ' 0',
+    'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
+    'padding:6px 0', 'color:' + fmTabColor
+  ].join(';');
+  fmTab.innerHTML = labelHide; // player visible → shows "HIDE"
+
+  fmPanel.appendChild(shell);
+  fmPanel.appendChild(fmTab);
+
   widget.innerHTML = '';
-  widget.appendChild(shell);
+  widget.appendChild(fmPanel);
+
+  // ── Slide state ───────────────────────────────────────────────
+  var fmHidden = sessionStorage.getItem(SLIDE_KEY) === '1';
+
+  function updateTab(hidden) {
+    fmTab.innerHTML = hidden ? labelShow : labelHide;
+    fmTab.setAttribute('aria-label', hidden ? 'Show player' : 'Hide player');
+  }
+
+  function setSlide(hidden, animate) {
+    if (!animate) {
+      fmPanel.style.transition = 'none';
+    } else {
+      fmPanel.style.transition = 'transform ' + SLIDE_DURATION + 'ms ' + EASING;
+    }
+    if (hidden) {
+      // Overshoot by the gap between the viewport left edge and the widget's left edge,
+      // so the tab arrives flush with the browser frame (no gap).
+      var leftGap = Math.max(0, Math.round(widget.getBoundingClientRect().left));
+      fmPanel.style.transform = 'translateX(calc(-100% + ' + TAB_WIDTH + 'px - ' + leftGap + 'px))';
+    } else {
+      fmPanel.style.transform = 'translateX(0)';
+    }
+    updateTab(hidden);
+    if (!animate) {
+      // Re-enable transition next frame so load restore has no animation
+      requestAnimationFrame(function () {
+        fmPanel.style.transition = 'transform ' + SLIDE_DURATION + 'ms ' + EASING;
+      });
+    }
+  }
+
+  // Restore saved state without animation
+  requestAnimationFrame(function () { setSlide(fmHidden, false); });
+
+  fmTab.addEventListener('click', function () {
+    fmHidden = !fmHidden;
+    sessionStorage.setItem(SLIDE_KEY, fmHidden ? '1' : '0');
+    setSlide(fmHidden, true);
+  });
 
   // ── Button events ─────────────────────────────────────────────
 
@@ -1691,8 +2131,18 @@ window.Webflow.push(function () {
   }
 
   playBtn.addEventListener('click', function () { if (controller) controller.togglePlay(); });
-  prevBtn.addEventListener('click', function () { if (controller) controller.previousTrack(); });
-  nextBtn.addEventListener('click', function () { if (controller) controller.nextTrack(); });
+
+  prevBtn.addEventListener('click', function () {
+    if (!controller || !trackList.length) return;
+    currentIndex = (currentIndex - 1 + trackList.length) % trackList.length;
+    controller.loadUri(spotifyUri, true, currentIndex);
+  });
+
+  nextBtn.addEventListener('click', function () {
+    if (!controller || !trackList.length) return;
+    currentIndex = (currentIndex + 1) % trackList.length;
+    controller.loadUri(spotifyUri, true, currentIndex);
+  });
 
   progressWrap.addEventListener('click', function (e) {
     if (!controller || !duration) return;
@@ -1703,13 +2153,18 @@ window.Webflow.push(function () {
 
   // ── Spotify iFrame API ────────────────────────────────────────
 
-  // The API injects iframes directly into <body> as siblings — watch for them
-  // and immediately apply hiding styles on the element itself.
+  // Hide any Spotify iframes injected directly into body
   var bodyObserver = new MutationObserver(function (mutations) {
     mutations.forEach(function (m) {
       m.addedNodes.forEach(function (node) {
         if (node.nodeName === 'IFRAME' && node.src && node.src.indexOf('open.spotify.com') !== -1) {
-          node.style.cssText = 'position:fixed!important;top:-9999px!important;left:-9999px!important;width:1px!important;height:1px!important;pointer-events:none!important;';
+          // position:fixed removes from flow (no page gap). Keep on-screen so
+          // any visibility checks on these helpers also pass. opacity:0 hides them.
+          node.style.setProperty('position', 'fixed', 'important');
+          node.style.setProperty('bottom', '0', 'important');
+          node.style.setProperty('right', '0', 'important');
+          node.style.setProperty('opacity', '0', 'important');
+          node.style.setProperty('pointer-events', 'none', 'important');
         }
       });
     });
@@ -1717,11 +2172,11 @@ window.Webflow.push(function () {
   bodyObserver.observe(document.body, { childList: true });
 
   window.onSpotifyIframeApiReady = function (IFrameAPI) {
-    IFrameAPI.createController(apiMount, { uri: openUrl }, function (ctrl) {
+    IFrameAPI.createController(apiMount, { uri: spotifyUri }, function (ctrl) {
+      if (controller) return; // guard: IIFE may fire more than once on Webflow double-push
       controller = ctrl;
 
       ctrl.addListener('playback_update', function (e) {
-        // Spotify wraps state in e.data; fall back to e directly if not wrapped
         var d = (e && e.data !== undefined) ? e.data : e;
         if (!d) return;
         var playing = !d.isPaused;
@@ -1734,15 +2189,25 @@ window.Webflow.push(function () {
           posMs    = d.position;
           posTs    = Date.now();
           elTotalTime.textContent = fmtMs(duration);
-        }
 
-        if (d.track) {
-          // API uses track.name — fall back to track.title just in case
-          var name = d.track.name || d.track.title;
-          if (name)                                   elTrackTitle.textContent = name;
-          if (d.track.artists && d.track.artists[0]) elArtistName.textContent = d.track.artists[0].name;
-          if (d.track.image_url)                      artImg.src = d.track.image_url;
+          // Identify current track by duration and update display + index
+          var track = trackFromDuration(d.duration);
+          if (track) {
+            elTrackTitle.textContent = track.name;
+            elArtistName.textContent = track.artist;
+            for (var i = 0; i < trackList.length; i++) {
+              if (trackList[i] === track) { currentIndex = i; break; }
+            }
+          }
         }
+      });
+
+      // Async: fetch track list for title display once extended API access is granted.
+      var playlistId = spotifyUri.replace('spotify:playlist:', '');
+      fetchToken(function (token) {
+        fetchPlaylistTracks(token, playlistId, function (tracks) {
+          trackList = tracks;
+        });
       });
     });
   };
