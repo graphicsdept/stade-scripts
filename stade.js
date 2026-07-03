@@ -197,6 +197,249 @@
    If moving entirely here, ensure the Webflow page-specific
    version is removed to avoid duplicate execution.
    ============================================================ */
+/* ============================================================
+   3b. ADAPTIVE NAV — Pixel-sample background behind nav,
+   switch nav + detail text between white and #111111.
+   Works on all pages: homepage hero (Section 3 calls directly),
+   case studies, galleries (vertical scroll + horizontal gallery scroll).
+   ============================================================ */
+(function () {
+
+  var THRESHOLD = 128; // perceived luminance 0–255 — above = light bg → dark text
+  var DURATION  = 500; // ms — color transition speed
+  var SAMPLE_PX = 32;  // canvas sample size (downscaled)
+
+  var nav = document.querySelector('.nav');
+  if (!nav) return;
+
+  // Inject transition + override styles once.
+  // data-nav-theme="on-dark"  = dark content behind nav → force white text
+  // data-nav-theme="on-light" = light content behind nav → force dark (#111) text
+  // No attribute = Webflow CSS stays in control
+  var s = document.createElement('style');
+  s.textContent = [
+    '.nav, .nav *, .work-title_details { transition: color ' + DURATION + 'ms ease; }',
+    '.icon_circle { transition: background-color ' + DURATION + 'ms ease; }',
+    '.nav .btn_primary { transition: color ' + DURATION + 'ms ease, background-color ' + DURATION + 'ms ease, border-color ' + DURATION + 'ms ease; }',
+    'body[data-nav-theme="on-dark"] .nav, body[data-nav-theme="on-dark"] .nav * { color: #ffffff !important; }',
+    'body[data-nav-theme="on-dark"] .nav .btn_primary { background-color: rgba(17,17,17,0.3) !important; border-color: rgba(255,255,255,0.3) !important; }',
+    'body[data-nav-theme="on-dark"] .icon_circle { background-color: #ffffff !important; }',
+    'body[data-nav-theme="on-dark"] .work-title_details { color: #ffffff !important; }',
+    'body[data-nav-theme="on-light"] .nav, body[data-nav-theme="on-light"] .nav * { color: #111111 !important; }',
+    'body[data-nav-theme="on-light"] .nav .btn_primary { background-color: rgba(255,255,255,0.3) !important; border-color: rgba(17,17,17,0.3) !important; }',
+    'body[data-nav-theme="on-light"] .icon_circle { background-color: #111111 !important; }',
+    'body[data-nav-theme="on-light"] .work-title_details { color: #111111 !important; }'
+  ].join('\n');
+  document.head.appendChild(s);
+
+  // Cache per image src (CORS fetch is expensive — do it once per src)
+  var cache = {};
+
+  // Draw source into a fresh canvas and return average perceived luminance (0–255),
+  // or null on CORS block. A new canvas per call prevents a cross-origin video draw
+  // from permanently tainting a shared canvas and blocking all subsequent reads.
+  function computeLuminance(source) {
+    try {
+      var c = document.createElement('canvas');
+      c.width = c.height = SAMPLE_PX;
+      var x = c.getContext('2d');
+      x.drawImage(source, 0, 0, SAMPLE_PX, SAMPLE_PX);
+      var d = x.getImageData(0, 0, SAMPLE_PX, SAMPLE_PX).data;
+      var lum = 0;
+      for (var i = 0; i < d.length; i += 4) lum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      return lum / (d.length / 4);
+    } catch (e) { return null; }
+  }
+
+  // Apply theme: isLight=true → dark text (on-light), isLight=false → white text (on-dark)
+  function applyTheme(isLight) {
+    document.body.setAttribute('data-nav-theme', isLight ? 'on-light' : 'on-dark');
+  }
+
+  // Fetch image with CORS headers, compute luminance, cache result.
+  // The cache-buster (?_c=1) forces a fresh CORS request, bypassing the browser's
+  // non-CORS cached copy (which would taint the canvas and block getImageData).
+  function sampleSrc(src, callback) {
+    if (cache[src] !== undefined) { callback(cache[src]); return; }
+    var img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload  = function () { var l = computeLuminance(img); cache[src] = l; callback(l); };
+    img.onerror = function () { cache[src] = null; callback(null); };
+    img.src = src + (src.indexOf('?') === -1 ? '?_c=1' : '&_c=1');
+  }
+
+  // Public API — called by Section 3 (homepage hero) to sample a specific element on activation
+  function sampleAndApply(elOrSrc) {
+    if (!elOrSrc) return;
+    if (typeof elOrSrc === 'string') {
+      sampleSrc(elOrSrc, function (l) { if (l !== null) applyTheme(l > THRESHOLD); });
+    } else if (elOrSrc.tagName === 'VIDEO') {
+      var l = computeLuminance(elOrSrc);
+      if (l !== null) { applyTheme(l > THRESHOLD); return; }
+      var fallback = findFallbackImgForVideo(elOrSrc);
+      if (fallback) sampleSrc(fallback.src, function (l2) { if (l2 !== null) applyTheme(l2 > THRESHOLD); });
+    } else if (elOrSrc.tagName === 'IMG' && elOrSrc.src) {
+      sampleSrc(elOrSrc.src, function (l) { if (l !== null) applyTheme(l > THRESHOLD); });
+    }
+  }
+
+  // Find the best fallback image for a cross-origin video that can't be canvas-sampled.
+  // Priority: 1) explicit .video-poster class, 2) any nearby img with real dimensions.
+  // Walks up to 5 ancestor levels — picks up gallery siblings even if off-screen.
+  function findFallbackImgForVideo(videoEl) {
+    var p = videoEl.parentElement, lvl;
+    // Pass 1: look for an explicit .video-poster
+    for (lvl = 0; lvl < 5 && p && p !== document.body; lvl++) {
+      var poster = p.querySelector('.video-poster[src]:not([src=""])');
+      if (poster) return poster;
+      p = p.parentElement;
+    }
+    // Pass 2: any img with real dimensions (gallery siblings, etc.)
+    p = videoEl.parentElement;
+    for (lvl = 0; lvl < 5 && p && p !== document.body; lvl++) {
+      var imgs = p.querySelectorAll('img[src]:not([src=""])');
+      for (var j = 0; j < imgs.length; j++) {
+        if (nav.contains(imgs[j])) continue;
+        var ir = imgs[j].getBoundingClientRect();
+        if (ir.width > 0 && ir.height > 0) return imgs[j];
+      }
+      p = p.parentElement;
+    }
+    return null;
+  }
+
+  // Parse rgba/rgb background-color string → luminance (0–255), or null if transparent
+  function bgColorLuminance(el) {
+    var bg = window.getComputedStyle(el).backgroundColor;
+    var m  = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/);
+    if (!m) return null;
+    var alpha = (m[4] !== undefined) ? parseFloat(m[4]) : 1;
+    if (alpha < 0.1) return null;
+    return 0.299 * parseInt(m[1]) + 0.587 * parseInt(m[2]) + 0.114 * parseInt(m[3]);
+  }
+
+  // Extract a URL from a CSS background-image value
+  function parseBgImgSrc(el) {
+    var bg = window.getComputedStyle(el).backgroundImage;
+    if (!bg || bg === 'none') return null;
+    var m = bg.match(/url\(["']?([^"')]+)["']?\)/);
+    return m ? m[1] : null;
+  }
+
+  // When no <img>/<video> is found under the nav, check sections for:
+  // 1) CSS background-image (sample it via CORS), 2) CSS background-color.
+  // Calls callback(lum) where lum is luminance 0–255 or null.
+  function checkBgFallback(navR, callback) {
+    var midX = navR.left + navR.width  * 0.5;
+    var midY = navR.top  + navR.height * 0.5;
+    var els  = document.querySelectorAll('section, [class*="section_"], div[class*="hero"], main');
+    for (var i = els.length - 1; i >= 0; i--) {
+      if (nav.contains(els[i])) continue;
+      var r = els[i].getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      if (r.top > midY || r.bottom < midY || r.left > midX || r.right < midX) continue;
+      // CSS background-image
+      var bgSrc = parseBgImgSrc(els[i]);
+      if (bgSrc) { sampleSrc(bgSrc, callback); return; }
+      // CSS background-color
+      var lum = bgColorLuminance(els[i]);
+      if (lum !== null) { callback(lum); return; }
+    }
+    callback(null); // nothing found
+  }
+
+  // Core check: use elementFromPoint at 3 x-positions just below the nav.
+  // pointer-events:none on the nav lets the browser look straight through it.
+  // Walks up from each found element to find the first img/video/bg-image/bg-color,
+  // samples all unique sources, averages luminance, applies theme.
+  function checkNavBackground() {
+    var navR  = nav.getBoundingClientRect();
+    // Sample just below the nav bottom. If nav reports no height (Webflow fixed-nav quirk),
+    // fall back to 32px from the top of the viewport.
+    var sampleY = (navR.bottom > 0) ? navR.bottom + 1 : 32;
+    if (sampleY > window.innerHeight * 0.25) sampleY = 32;
+    var vw    = window.innerWidth;
+    var xPts  = [vw * 0.2, vw * 0.5, vw * 0.8];
+
+    // Briefly remove pointer-events from nav so elementFromPoint sees through it
+    var prevPE = nav.style.pointerEvents;
+    nav.style.pointerEvents = 'none';
+    var hits = xPts.map(function (x) { return document.elementFromPoint(x, sampleY); });
+    nav.style.pointerEvents = prevPE;
+
+    // Walk up from each hit to find a meaningful source; de-dup by key
+    var seenKeys = {}, candidates = [];
+    hits.forEach(function (hit) {
+      var p = hit;
+      while (p && p !== document.documentElement) {
+        var key;
+        if (p.tagName === 'IMG' && (p.currentSrc || p.src)) {
+          key = 'img:' + (p.currentSrc || p.src);
+          if (!seenKeys[key]) { seenKeys[key] = true; candidates.push({ type: 'img', el: p }); }
+          return;
+        }
+        if (p.tagName === 'VIDEO') {
+          key = 'vid:' + (p.src || p.currentSrc || candidates.length);
+          if (!seenKeys[key]) { seenKeys[key] = true; candidates.push({ type: 'video', el: p }); }
+          return;
+        }
+        var bgSrc = parseBgImgSrc(p);
+        if (bgSrc) {
+          key = 'bg:' + bgSrc;
+          if (!seenKeys[key]) { seenKeys[key] = true; candidates.push({ type: 'bgimg', src: bgSrc }); }
+          return;
+        }
+        var bgLum = bgColorLuminance(p);
+        if (bgLum !== null) {
+          key = 'bgcol:' + Math.round(bgLum);
+          if (!seenKeys[key]) { seenKeys[key] = true; candidates.push({ type: 'bgcol', lum: bgLum }); }
+          return;
+        }
+        p = p.parentElement;
+      }
+    });
+
+    if (candidates.length === 0) { applyTheme(true); return; }
+
+    var lumSum = 0, lumN = 0, pending = candidates.length;
+    function onLum(lum) {
+      if (lum !== null) { lumSum += lum; lumN++; }
+      if (--pending === 0) applyTheme(lumN === 0 || (lumSum / lumN) > THRESHOLD);
+    }
+
+    candidates.forEach(function (c) {
+      if (c.type === 'bgcol') { onLum(c.lum); return; }
+      if (c.type === 'bgimg') { sampleSrc(c.src, onLum); return; }
+      if (c.type === 'img')   { sampleSrc(c.el.currentSrc || c.el.src, onLum); return; }
+      if (c.type === 'video') {
+        var lum = computeLuminance(c.el);
+        if (lum !== null) { onLum(lum); return; }
+        // CORS-blocked video — try poster then any nearby gallery image
+        var fb = findFallbackImgForVideo(c.el);
+        if (fb) { sampleSrc(fb.currentSrc || fb.src, onLum); } else { onLum(null); }
+      }
+    });
+  }
+
+  // Expose for Section 3 (homepage hero) and Section 5 (horizontal gallery scroll)
+  window.stadeNavTheme = { sampleAndApply: sampleAndApply, applyTheme: applyTheme, check: checkNavBackground };
+
+  // Throttled vertical scroll listener
+  var rafPending = false;
+  window.addEventListener('scroll', function () {
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(function () { rafPending = false; checkNavBackground(); });
+  }, { passive: true });
+
+  // Initial check — skip homepage (Section 3 handles it via sampleAndApply on first activation)
+  if (!document.querySelector('.section_home-hero')) {
+    setTimeout(checkNavBackground, 500);
+    window.addEventListener('load', function () { setTimeout(checkNavBackground, 100); });
+  }
+
+})();
+
 window.Webflow = window.Webflow || [];
 window.Webflow.push(function () {
 
@@ -359,6 +602,17 @@ window.Webflow.push(function () {
 
   function lockItem(item) {
     lockedItem = item; currentIndex = items.indexOf(item); setActive(item);
+    // Auto-detect nav theme by sampling the hero background media.
+    // Always prefer the image — cross-origin videos block canvas reads silently.
+    // Image and video share the same visual content for a given CMS item.
+    if (window.stadeNavTheme) {
+      var media = getThumbMedia(item);
+      if (media.img && media.img.src) {
+        window.stadeNavTheme.sampleAndApply(media.img);
+      } else if (media.vid) {
+        window.stadeNavTheme.sampleAndApply(media.vid);
+      }
+    }
   }
 
   function navigateTo(item) {
@@ -526,7 +780,16 @@ window.Webflow.push(function () {
   if (!mq767.matches) gridList.classList.add('view-' + activeView);
   var activeTimers  = [];
 
-  var viewColumns = { small: 8, medium: 4, large: 2 };
+  // Column counts scale with viewport width.
+  // >1180px  → S:8  M:4  L:2  (full desktop)
+  // 992-1180 → S:6  M:3  L:2  (small laptop / narrow desktop)
+  // 768-991  → S:4  M:2  L:1  (tablet landscape / large tablet)
+  function getViewColumns() {
+    var w = window.innerWidth;
+    if (w <= 991)  return { small: 4, medium: 2, large: 1 };
+    if (w <= 1180) return { small: 6, medium: 3, large: 2 };
+    return { small: 8, medium: 4, large: 2 };
+  }
 
   function makeTransition(dur) {
     return 'opacity ' + dur + 'ms ' + EASING + ', transform ' + dur + 'ms ' + EASING;
@@ -559,7 +822,7 @@ window.Webflow.push(function () {
   }
 
   function applyView(view, instant) {
-    var cols  = viewColumns[view];
+    var cols  = getViewColumns()[view];
     var items = Array.from(gridList.querySelectorAll('.cms-work-grid_list_item'));
     gridList.classList.remove('view-small', 'view-medium', 'view-large');
     gridList.classList.add('view-' + view);
@@ -677,6 +940,16 @@ window.Webflow.push(function () {
   }
 
   mq767.addListener(function (e) { setMobileViewState(e.matches); });
+
+  // Re-apply current view on resize so column counts stay correct when
+  // crossing the 991px and 1180px breakpoints.
+  var resizeTimer = null;
+  window.addEventListener('resize', function () {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      if (!mq767.matches) applyView(activeView, true);
+    }, 150);
+  });
 
   window.Webflow = window.Webflow || [];
   window.Webflow.push(function () {
@@ -809,7 +1082,13 @@ window.Webflow.push(function () {
     cursor.classList.add('is-visible');
   }
 
-  list.addEventListener('scroll',    function ()  { if (!isDragging) { if (mouseX >= 0) syncCursor(); else updateCursorLabel(false); } });
+  list.addEventListener('scroll',    function ()  {
+    if (!isDragging) {
+      if (mouseX >= 0) syncCursor(); else updateCursorLabel(false);
+      // Keep nav theme in sync as horizontal images scroll under it
+      if (window.stadeNavTheme) window.stadeNavTheme.check();
+    }
+  });
   list.addEventListener('mouseenter', function (e) { mouseX = e.clientX; mouseY = e.clientY; syncCursor(); });
   list.addEventListener('mouseleave', function ()  { mouseX = -1; mouseY = -1; hideCursor(); });
   list.addEventListener('mousemove',  function (e) { mouseX = e.clientX; mouseY = e.clientY; moveCursor(e); syncCursor(); });
@@ -852,7 +1131,7 @@ window.Webflow.push(function () {
   }
 
   function onDragStart(e) {
-    if (isOverVideo(e)) return;
+    if (isOverVideo(e)) { didDrag = false; return; }
     if (rafId)    { cancelAnimationFrame(rafId);    rafId    = null; }
     if (wheelRaf) { cancelAnimationFrame(wheelRaf); wheelRaf = null; }
     isDragging  = true;
@@ -897,6 +1176,9 @@ window.Webflow.push(function () {
 
   updateCursorLabel(false);
   runEntrance();
+
+  // Expose syncCursor so Section 6 can immediately refresh the label after play/pause
+  window.stadeGallery = { syncCursor: syncCursor };
 
 })();
 
@@ -995,7 +1277,10 @@ window.Webflow.push(function () {
       wrap.style.cursor = 'none';
       if (!inGallery) wrap.setAttribute('data-cursor-exclude', '');
     }
-    var posterEl = wrap.querySelector('.video-poster');
+    // Poster may be a sibling of wrap (e.g. .fullwidth-video_placeholder outside .video_embed)
+    // so search the parent container too.
+    var posterEl = wrap.querySelector('.video-poster') ||
+                   (wrap.parentElement && wrap.parentElement.querySelector('.video-poster'));
     if (posterEl) posterEl.style.cssText += ';position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:2;pointer-events:none;transition:opacity '+FADE_DURATION+'ms '+EASING;
     var volSlider = hasAudio ? buildVolumeSlider(wrap, video) : null;
     function play() {
@@ -1003,12 +1288,14 @@ window.Webflow.push(function () {
       video.play().then(function () {
         isPlaying = true; wrap.classList.add('is-playing');
         if (!passive && !inGallery) setCursorLabel('Pause');
+        if (inGallery && window.stadeGallery) window.stadeGallery.syncCursor();
         if (posterEl) posterEl.style.opacity = '0';
       }).catch(function () {});
     }
     function pause() {
       video.pause(); isPlaying = false; wrap.classList.remove('is-playing');
       if (!passive && !inGallery) setCursorLabel('Play');
+      if (inGallery && window.stadeGallery) window.stadeGallery.syncCursor();
       if (posterEl) posterEl.style.opacity = '1';
     }
     allPauseFns.push(pause);
