@@ -221,14 +221,34 @@
     '.nav, .nav *, .work-title_details { transition: color ' + DURATION + 'ms ease; }',
     '.icon_circle { transition: background-color ' + DURATION + 'ms ease; }',
     '.nav .btn_primary { transition: color ' + DURATION + 'ms ease, background-color ' + DURATION + 'ms ease, border-color ' + DURATION + 'ms ease; }',
+    // Contact overlay: transitions for all properties we switch
+    '.nav-contact { transition: background-color ' + DURATION + 'ms ease, border-color ' + DURATION + 'ms ease, color ' + DURATION + 'ms ease; }',
+    '.nav-contact .form_text-field { transition: border-color ' + DURATION + 'ms ease, color ' + DURATION + 'ms ease; }',
+    '.nav-contact .submit { transition: background-color ' + DURATION + 'ms ease, border-color ' + DURATION + 'ms ease, color ' + DURATION + 'ms ease; }',
+    // on-dark: nav
     'body[data-nav-theme="on-dark"] .nav, body[data-nav-theme="on-dark"] .nav * { color: #ffffff !important; }',
     'body[data-nav-theme="on-dark"] .nav .btn_primary { background-color: rgba(17,17,17,0.3) !important; border-color: rgba(255,255,255,0.3) !important; }',
     'body[data-nav-theme="on-dark"] .icon_circle { background-color: #ffffff !important; }',
     'body[data-nav-theme="on-dark"] .work-title_details { color: #ffffff !important; }',
+    // on-dark: contact overlay — exact Webflow dark values (--stade_blk-50, --stade_white-30)
+    'body[data-nav-theme="on-dark"] .nav-contact { background-color: #11111180 !important; border-color: #ffffff4d !important; }',
+    'body[data-nav-theme="on-dark"] .nav-contact, body[data-nav-theme="on-dark"] .nav-contact * { color: #ffffff !important; }',
+    'body[data-nav-theme="on-dark"] .nav-contact .form_text-field { color: #ffffff !important; border-color: #ffffff4d !important; }',
+    'body[data-nav-theme="on-dark"] .nav-contact .form_text-field:hover, body[data-nav-theme="on-dark"] .nav-contact .form_text-field:focus { color: #ffffff !important; border-color: #ffffff !important; }',
+    'body[data-nav-theme="on-dark"] .nav-contact .form_text-field::placeholder { color: #ffffff4d !important; }',
+    'body[data-nav-theme="on-dark"] .nav-contact .submit { background-color: #11111180 !important; border-color: #ffffff4d !important; }',
+    // on-light: nav
     'body[data-nav-theme="on-light"] .nav, body[data-nav-theme="on-light"] .nav * { color: #111111 !important; }',
     'body[data-nav-theme="on-light"] .nav .btn_primary { background-color: rgba(255,255,255,0.3) !important; border-color: rgba(17,17,17,0.3) !important; }',
     'body[data-nav-theme="on-light"] .icon_circle { background-color: #111111 !important; }',
-    'body[data-nav-theme="on-light"] .work-title_details { color: #111111 !important; }'
+    'body[data-nav-theme="on-light"] .work-title_details { color: #111111 !important; }',
+    // on-light: contact overlay — exact Webflow light variant values (--stade_white, --stade_blk-50, --stade_blk-30)
+    'body[data-nav-theme="on-light"] .nav-contact { background-color: #ffffff !important; border-color: #11111180 !important; }',
+    'body[data-nav-theme="on-light"] .nav-contact, body[data-nav-theme="on-light"] .nav-contact * { color: #111111 !important; }',
+    'body[data-nav-theme="on-light"] .nav-contact .form_text-field { color: #111111 !important; border-color: #1111114d !important; }',
+    'body[data-nav-theme="on-light"] .nav-contact .form_text-field:hover, body[data-nav-theme="on-light"] .nav-contact .form_text-field:focus { color: #111111 !important; border-color: #111111 !important; }',
+    'body[data-nav-theme="on-light"] .nav-contact .form_text-field::placeholder { color: #1111114d !important; }',
+    'body[data-nav-theme="on-light"] .nav-contact .submit { background-color: #ffffff !important; border-color: #1111114d !important; }'
   ].join('\n');
   document.head.appendChild(s);
 
@@ -414,9 +434,23 @@
       if (c.type === 'video') {
         var lum = computeLuminance(c.el);
         if (lum !== null) { onLum(lum); return; }
-        // CORS-blocked video — try poster then any nearby gallery image
+        // CORS-blocked video — 1) explicit data-nav-theme hint on [data-video] wrapper
+        var wrap = c.el.closest ? c.el.closest('[data-nav-theme]') : null;
+        // don't read body's own attribute — only element-level hints
+        if (wrap && wrap !== document.body) {
+          onLum(wrap.getAttribute('data-nav-theme') === 'dark' ? 0 : 255); return;
+        }
+        // 2) poster or nearby gallery image
         var fb = findFallbackImgForVideo(c.el);
-        if (fb) { sampleSrc(fb.currentSrc || fb.src, onLum); } else { onLum(null); }
+        if (fb) { sampleSrc(fb.currentSrc || fb.src, onLum); return; }
+        // 3) background-color of the video's container ancestors
+        var vp = c.el.parentElement;
+        while (vp && vp !== document.body) {
+          var vbg = bgColorLuminance(vp);
+          if (vbg !== null) { onLum(vbg); return; }
+          vp = vp.parentElement;
+        }
+        onLum(null);
       }
     });
   }
@@ -1919,7 +1953,7 @@ window.Webflow.push(function () {
       'height:' + (embedH + 4) + 'px',
       'background:#1E1E1E', 'overflow:hidden',
       'padding:2px', 'box-sizing:border-box',
-      'border-radius:' + RADIUS,
+      'border-radius:0 ' + RADIUS + ' ' + RADIUS + ' 0',
       'opacity:0', 'transform:translateY(12px)',
       'transition:opacity 600ms ' + EASING + ', transform 600ms ' + EASING
     ].join(';');
@@ -2038,15 +2072,15 @@ window.Webflow.push(function () {
     ntvTab.style.cssText = [
       'width:' + TAB_WIDTH + 'px', 'flex-shrink:0', 'align-self:center',
       'background:#1a1a1a', 'border:none',
-      'border-radius:0 ' + RADIUS + ' ' + RADIUS + ' 0',
+      'border-radius:' + RADIUS + ' 0 0 ' + RADIUS,
       'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
       'padding:6px 0', 'color:rgba(255,255,255,0.7)',
       'opacity:0', 'transition:opacity 200ms ease'
     ].join(';');
     ntvTab.innerHTML = ntvLabelHide;
 
-    ntvPanel.appendChild(nativeShell);
     ntvPanel.appendChild(ntvTab);
+    ntvPanel.appendChild(nativeShell);
     widget.innerHTML = '';
     widget.appendChild(ntvPanel);
 
@@ -2067,8 +2101,8 @@ window.Webflow.push(function () {
         ntvPanel.style.transition = 'transform ' + SLIDE_DURATION + 'ms ' + EASING;
       }
       if (hidden) {
-        var ntvLeftGap = Math.max(0, Math.round(widget.getBoundingClientRect().left));
-        ntvPanel.style.transform = 'translateX(calc(-100% + ' + TAB_WIDTH + 'px - ' + ntvLeftGap + 'px))';
+        var ntvRightGap = Math.max(0, Math.round(window.innerWidth - widget.getBoundingClientRect().right));
+        ntvPanel.style.transform = 'translateX(calc(100% - ' + TAB_WIDTH + 'px + ' + ntvRightGap + 'px))';
       } else {
         ntvPanel.style.transform = 'translateX(0)';
       }
@@ -2188,7 +2222,7 @@ window.Webflow.push(function () {
     'display:flex', 'align-items:stretch', 'flex:1', 'min-width:0',
     'background:#fff',
     'overflow:hidden', 'font-family:inherit', 'box-sizing:border-box',
-    'border-radius:' + RADIUS,
+    'border-radius:0 ' + RADIUS + ' ' + RADIUS + ' 0',
     'opacity:0',
     'transition:opacity ' + FADE_SPEED + 'ms ' + EASING
   ].join(';');
@@ -2357,14 +2391,14 @@ window.Webflow.push(function () {
   fmTab.style.cssText = [
     'width:' + TAB_WIDTH + 'px', 'flex-shrink:0', 'align-self:center',
     'background:#fff', 'border:none',
-    'border-radius:0 ' + RADIUS + ' ' + RADIUS + ' 0',
+    'border-radius:' + RADIUS + ' 0 0 ' + RADIUS,
     'cursor:pointer', 'display:flex', 'align-items:center', 'justify-content:center',
     'padding:6px 0', 'color:' + fmTabColor
   ].join(';');
   fmTab.innerHTML = labelHide; // player visible → shows "HIDE"
 
-  fmPanel.appendChild(shell);
   fmPanel.appendChild(fmTab);
+  fmPanel.appendChild(shell);
 
   widget.innerHTML = '';
   widget.appendChild(fmPanel);
@@ -2384,10 +2418,8 @@ window.Webflow.push(function () {
       fmPanel.style.transition = 'transform ' + SLIDE_DURATION + 'ms ' + EASING;
     }
     if (hidden) {
-      // Overshoot by the gap between the viewport left edge and the widget's left edge,
-      // so the tab arrives flush with the browser frame (no gap).
-      var leftGap = Math.max(0, Math.round(widget.getBoundingClientRect().left));
-      fmPanel.style.transform = 'translateX(calc(-100% + ' + TAB_WIDTH + 'px - ' + leftGap + 'px))';
+      var fmRightGap = Math.max(0, Math.round(window.innerWidth - widget.getBoundingClientRect().right));
+      fmPanel.style.transform = 'translateX(calc(100% - ' + TAB_WIDTH + 'px + ' + fmRightGap + 'px))';
     } else {
       fmPanel.style.transform = 'translateX(0)';
     }
